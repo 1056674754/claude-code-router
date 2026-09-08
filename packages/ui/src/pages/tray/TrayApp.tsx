@@ -2,7 +2,7 @@ import {
   AppConfig, applyTrayThemePreference, createSourceTabs, DEFAULT_TRAY_WIDGETS, defaultTrayWidgetVariant, emptySnapshots, formatCompactNumber, formatProviderName,
   formatPercent, formatUpdated, formatUsdCost, normalizeTrayWidgets, ProviderAccountSnapshot, rangeLabel,
   SnapshotMap, SourceTab, TrayComponentVariants, TrayWidgetConfig, UsageComparisonRow, UsageStatsFilter, UsageStatsRange, UsageTotals, useCallback, useEffect,
-  useMemo, useState, useTrayErrorText, useTrayText, useTrayThemePreference
+  useMemo, useRef, useState, useTrayErrorText, useTrayText, useTrayThemePreference
 } from "./shared";
 import {
   AccountSummaryPanel, AnimatedUsageChart, ChartShell, ModelShareChart, RingMetrics,
@@ -28,6 +28,8 @@ export function TrayApp() {
   const [accountRefreshing, setAccountRefreshing] = useState(false);
   const [trayWidgets, setTrayWidgets] = useState<TrayWidgetConfig[]>(DEFAULT_TRAY_WIDGETS);
   const [selectedRange, setSelectedRange] = useState<TrayHeaderRange>("30d");
+  const refreshGeneration = useRef(0);
+  const accountRefreshGeneration = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!window.ccr) {
@@ -37,6 +39,7 @@ export function TrayApp() {
       return;
     }
 
+    const generation = ++refreshGeneration.current;
     setLoading(true);
     setError("");
     try {
@@ -52,6 +55,9 @@ export function TrayApp() {
         window.ccr.getProviderAccountSnapshots(selectedProvider)
       ]);
 
+      if (generation !== refreshGeneration.current) {
+        return;
+      }
       setSnapshots({ today, "24h": day, "7d": week, "30d": month, "180d": halfYear });
       setAllSnapshots((current) => ({ ...current, "30d": allMonth ?? month }));
       setAccountSnapshots(accounts);
@@ -59,9 +65,13 @@ export function TrayApp() {
       setTrayWidgets(normalizeTrayWidgets(config.trayWidgets, config.trayWindowModules, config.trayComponentVariants));
       applyTrayThemePreference(config.theme);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (generation === refreshGeneration.current) {
+        setError(formatError(nextError));
+      }
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+      }
     }
   }, [formatError, selectedProvider]);
 
@@ -71,15 +81,23 @@ export function TrayApp() {
       return;
     }
 
+    const generation = ++accountRefreshGeneration.current;
     setAccountRefreshing(true);
     setError("");
     try {
       const accounts = await window.ccr.getProviderAccountSnapshots(selectedProvider, { forceRefresh: true });
+      if (generation !== accountRefreshGeneration.current) {
+        return;
+      }
       setAccountSnapshots(accounts);
     } catch (nextError) {
-      setError(formatError(nextError));
+      if (generation === accountRefreshGeneration.current) {
+        setError(formatError(nextError));
+      }
     } finally {
-      setAccountRefreshing(false);
+      if (generation === accountRefreshGeneration.current) {
+        setAccountRefreshing(false);
+      }
     }
   }, [formatError, selectedProvider]);
 
@@ -98,13 +116,40 @@ export function TrayApp() {
     };
   }, []);
 
+  // The panel window is created once and only hidden afterwards, so gate the
+  // poll on document visibility: a hidden panel stops querying stats, and
+  // reopening it refreshes immediately instead of showing up-to-a-minute-old
+  // throttled data.
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5000);
+    let timer: number | undefined;
+    const stopPolling = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    const startPolling = () => {
+      if (timer === undefined) {
+        void refresh();
+        timer = window.setInterval(() => {
+          void refresh();
+        }, 5000);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    if (document.visibilityState === "visible") {
+      startPolling();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.clearInterval(timer);
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh]);
 

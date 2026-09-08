@@ -82,13 +82,38 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
     };
   }, [provider]);
 
+  // Same visibility gate as TrayApp: the window is only ever hidden, so stop
+  // polling while hidden and refresh immediately on reopen.
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5000);
+    let timer: number | undefined;
+    const stopPolling = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    const startPolling = () => {
+      if (timer === undefined) {
+        void refresh();
+        timer = window.setInterval(() => {
+          void refresh();
+        }, 5000);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    if (document.visibilityState === "visible") {
+      startPolling();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.clearInterval(timer);
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh]);
 

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { LoaderCircle, Power, RefreshCw } from "lucide-react";
 import appLogoUrl from "@/assets/logo.png";
@@ -29,7 +29,7 @@ import type {
 } from "@ccr/core/contracts/app";
 
 export  {
-  createContext, useCallback, useContext, useEffect, useMemo, useState, createRoot,
+  createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, createRoot,
   LoaderCircle, Power, RefreshCw, appLogoUrl, trayCyanIconUrl, trayOrangeIconUrl, trayVioletIconUrl, DEFAULT_TRAY_COMPONENT_VARIANTS, DEFAULT_TRAY_WIDGETS, DEFAULT_TRAY_WINDOW_MODULES, TRAY_SINGLETON_WIDGET_TYPES, TRAY_TOP_WIDGET_TYPES, TRAY_WINDOW_MODULE_IDS
 };
 export type {
