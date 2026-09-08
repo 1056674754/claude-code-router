@@ -38,8 +38,7 @@ class TrayController {
   private detailPopover?: BrowserWindow;
   private ignorePopoverBlurUntil = 0;
   private popover?: BrowserWindow;
-  private popoverReady = false;
-  private popoverShowPending = false;
+  private popoverFocusSeen = false;
   private randomTrayIconDateKey?: string;
   private resolvedRandomTrayIcon?: TrayMascotIconId;
   private refreshTimer?: NodeJS.Timeout;
@@ -61,10 +60,6 @@ class TrayController {
     this.tray.on("click", () => {
       this.suppressMainWindowActivation();
       this.togglePopover();
-    });
-    this.tray.on("double-click", () => {
-      this.suppressMainWindowActivation();
-      this.showMainWindow();
     });
     this.tray.on("right-click", () => {
       this.suppressMainWindowActivation();
@@ -183,10 +178,6 @@ class TrayController {
 
   private showPopover(): void {
     const popover = this.ensurePopover();
-    if (!this.popoverReady) {
-      this.popoverShowPending = true;
-      return;
-    }
     this.clearDetailCloseTimer();
     this.detailOpen = false;
     this.hideDetailPopover();
@@ -197,6 +188,7 @@ class TrayController {
 
     popover.setBounds(menu, false);
     this.ignorePopoverBlurUntil = Date.now() + trayBlurIgnoreMs;
+    this.popoverFocusSeen = false;
     // Re-register the panel with the window server before ordering it front.
     // After being hidden on another Space (especially a fullscreen one), macOS
     // keeps the panel parked there and a plain makeKeyAndOrderFront would drag
@@ -205,14 +197,33 @@ class TrayController {
     popover.showInactive();
     popover.moveTop();
     popover.focus();
-    // A keyless panel never emits blur again, and a blur swallowed by the
-    // ignore window above leaves nothing to re-check — hide an unfocused
-    // panel ourselves once the ignore window has passed.
+    this.watchPopoverFocus();
+  }
+
+  // A keyless panel never emits blur again, and a blur landing inside the
+  // ignore window above is swallowed — either way dismissal is dead. Retry
+  // focus once in case it raced the window becoming visible, and close the
+  // panel if its key was gained and lost, or never arrives at all.
+  private watchPopoverFocus(attempt = 0): void {
     setTimeout(() => {
-      if (this.popover && !this.popover.isDestroyed() && this.popover.isVisible() && !this.popover.isFocused()) {
-        this.hidePopover();
+      const popover = this.popover;
+      if (!popover || popover.isDestroyed() || !popover.isVisible()) {
+        return;
       }
-    }, trayBlurIgnoreMs + 200);
+      if (popover.isFocused()) {
+        return;
+      }
+      if (this.popoverFocusSeen) {
+        this.hidePopover();
+        return;
+      }
+      if (attempt < 2) {
+        popover.focus();
+        this.watchPopoverFocus(attempt + 1);
+        return;
+      }
+      this.hidePopover();
+    }, attempt === 0 ? trayBlurIgnoreMs + 200 : 320);
   }
 
   private ensurePopover(): BrowserWindow {
@@ -256,22 +267,14 @@ class TrayController {
     // and screen-capture annotation overlays; "pop-up-menu" renders above them.
     this.popover.setAlwaysOnTop(true, "floating");
     this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    this.popover.on("focus", () => {
+      this.popoverFocusSeen = true;
+    });
     this.popover.on("blur", () => this.handlePopoverBlur());
     this.popover.on("closed", () => {
       this.popover = undefined;
-      this.popoverShowPending = false;
     });
 
-    this.popoverReady = false;
-    const markPopoverReady = () => {
-      this.popoverReady = true;
-      if (this.popoverShowPending) {
-        this.popoverShowPending = false;
-        this.showPopover();
-      }
-    };
-    this.popover.webContents.once("did-finish-load", markPopoverReady);
-    this.popover.webContents.once("did-fail-load", markPopoverReady);
     void this.popover.loadURL(createTrayPageUrl("menu"));
     return this.popover;
   }
