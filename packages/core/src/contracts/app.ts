@@ -730,8 +730,14 @@ export const ROUTER_FALLBACK_MAX_RETRY_COUNT = 9999;
 export type RouterFallbackConfig = {
   mode: RouterFallbackMode;
   models: string[];
+  rateLimitWaitMs?: number;
   retryCount: number;
 };
+
+// While a client request is held through upstream rate-limit windows, wait at
+// most this long before surfacing the 429 to the client.
+export const ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS = 120_000;
+export const ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS = 600_000;
 
 export type RouterBuiltInAgentRuleId = "claude-code" | "codex";
 

@@ -1426,6 +1426,7 @@ export const appCopy: Record<ResolvedLanguage, AppCopy> = {
       "Attempt": "尝试",
       "Final attempt": "最终尝试",
       "Next retry wait": "下次重试等待",
+      "Rate-limit wait (s)": "限流等待（秒）",
       "Retries": "重试次数",
       "Retry": "继续重试",
       "Retry attempts": "重试尝试",

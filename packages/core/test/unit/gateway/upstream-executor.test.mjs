@@ -474,3 +474,64 @@ test("model-chain fallback rebuilds every protocol attempt from the canonical re
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rate-limit hold keeps the client request alive and retries until upstream recovers", async () => {
+  const originalFetch = globalThis.fetch;
+  const statuses = [429, 429, 200];
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    const status = statuses[Math.min(fetchCount, statuses.length - 1)];
+    fetchCount += 1;
+    return new Response(null, {
+      headers: { "content-type": "application/json", "retry-after": "1" },
+      status
+    });
+  };
+  try {
+    const outcome = await fetchUpstreamWithFallback({
+      body: Buffer.from('{"model":"test-model"}'),
+      config: { Providers: [], Router: { fallback: { mode: "retry", models: [], rateLimitWaitMs: 4000, retryCount: 0 }, rules: [] }, virtualModelProfiles: [] },
+      coreAuthToken: "core-token",
+      fallback: { mode: "retry", models: [], rateLimitWaitMs: 4000, retryCount: 0 },
+      headers: {},
+      method: "POST",
+      path: "/v1/messages",
+      routedModel: "test-model",
+      upstreamUrl: "http://127.0.0.1:3456/v1/messages"
+    });
+
+    assert.equal(outcome.response.status, 200);
+    assert.equal(fetchCount, 3);
+    assert.equal(outcome.failedAttempts.length, 2);
+    assert.ok(outcome.failedAttempts.every((failed) => failed.statusCode === 429));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rate-limit hold surfaces the 429 once the wait budget is exhausted", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(null, { headers: { "content-type": "application/json" }, status: 429 });
+  };
+  try {
+    const outcome = await fetchUpstreamWithFallback({
+      body: Buffer.from('{"model":"test-model"}'),
+      config: { Providers: [], Router: { fallback: { mode: "retry", models: [], rateLimitWaitMs: 60, retryCount: 0 }, rules: [] }, virtualModelProfiles: [] },
+      coreAuthToken: "core-token",
+      fallback: { mode: "retry", models: [], rateLimitWaitMs: 60, retryCount: 0 },
+      headers: {},
+      method: "POST",
+      path: "/v1/messages",
+      routedModel: "test-model",
+      upstreamUrl: "http://127.0.0.1:3456/v1/messages"
+    });
+
+    assert.equal(outcome.response.status, 429);
+    assert.equal(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

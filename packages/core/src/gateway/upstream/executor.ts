@@ -11,6 +11,7 @@ import { requestProtocolForPath } from "@ccr/core/routing/protocol-endpoints";
 import { resolveConfiguredProviderModelSelector, resolveUniqueConfiguredProviderModelSelector } from "@ccr/core/routing/model-resolution";
 import { estimateLimitUsage } from "@ccr/core/gateway/limits/window-limiter";
 import { providerCredentialLimitState, readProviderCredentialCooldown, recordProviderCredentialOutcome } from "@ccr/core/providers/credential-pool";
+import { clampNumber } from "@ccr/core/gateway/internal/collections";
 import { isRecord, stringValue } from "@ccr/core/gateway/internal/value";
 import { isLocalClaudeCodeOauthProviderPlugin, mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
 import { abortSignalMessage, formatError, omitLocalObservabilityHeaders, shouldSendBody, withCoreGatewayAuthHeader } from "@ccr/core/gateway/http/io";
@@ -18,7 +19,8 @@ import { parseJsonObjectSafe, releaseJsonObject, serializeJsonBody, serializeJso
 import { resolveGatewayPublicModelId } from "@ccr/core/gateway/features/model-discovery";
 import { activeProviderCredentials, findProviderByPublicOrInternalName, findProviderCredentialBySlug, normalizedProviderCapabilities, parseProviderCredentialInternalName, providerCapabilityForClientProtocol, providerCapabilityInternalName, providerCapabilityNameMatches, providerCredentialInternalName, providerCredentialPriority, providerCredentialRuntimeId, providerCredentialSlug, providerProtocolForClientProtocol, sanitizeHeaderValue } from "@ccr/core/providers/runtime-topology";
 import { delay } from "@ccr/core/gateway/internal/clock";
-import { retryDelayAfterNetworkError, retryDelayAfterStatus, shouldFallbackAfterStatus } from "@ccr/core/gateway/upstream/retry-policy";
+import { rateLimitRetryWaitMs, retryDelayAfterNetworkError, retryDelayAfterStatus, shouldFallbackAfterStatus } from "@ccr/core/gateway/upstream/retry-policy";
+import { ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS, ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS } from "@ccr/core/contracts/app";
 import { claudeCodeOauthBetaHeader, claudeCodeOauthRequiredBeta, UpstreamRequestError } from "@ccr/core/gateway/internal/shared";
 import type { ApiKeyLimitUsage, ProviderCredentialRoutingTarget, UpstreamAttempt, UpstreamFailedAttempt, UpstreamFetchResult } from "@ccr/core/gateway/internal/shared";
 import type { RouteTraceObserver } from "@ccr/core/observability/route-trace";
@@ -311,6 +313,8 @@ export async function fetchUpstreamWithFallback(input: {
     planningRouting.routedModel
   );
   const failedAttempts: UpstreamFailedAttempt[] = [];
+  let rateLimitHoldStartedAtMs = 0;
+  let rateLimitRetryCount = 0;
   const attemptRoutingCache = new Map<string | undefined, {
     body?: Buffer;
     headers: Record<string, string>;
@@ -507,6 +511,59 @@ export async function fetchUpstreamWithFallback(input: {
           await delay(delayMs, input.signal);
         }
         continue;
+      }
+
+      // Rate-limit hold: once the plan's attempts are exhausted, keep the
+      // client request alive and re-attempt the same target until the
+      // rate-limit wait budget runs out, instead of surfacing the 429.
+      if (response.status === 429) {
+        const waitBudgetMs = clampNumber(
+          input.fallback.rateLimitWaitMs ?? ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS,
+          0,
+          ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS
+        );
+        if (waitBudgetMs > 0 && !input.signal?.aborted) {
+          if (rateLimitHoldStartedAtMs === 0) {
+            rateLimitHoldStartedAtMs = Date.now();
+          }
+          const waitMs = rateLimitRetryWaitMs({
+            attemptIndex: rateLimitRetryCount,
+            elapsedMs: Date.now() - rateLimitHoldStartedAtMs,
+            retryAfterHeader: response.headers.get("retry-after"),
+            waitBudgetMs
+          });
+          if (waitMs !== undefined) {
+            rateLimitRetryCount += 1;
+            input.trace?.capture({
+              attempt: attemptNumber,
+              durationMs: Date.now() - attemptStartedAt,
+              kind: "outcome",
+              name: "upstream.attempt.outcome",
+              outcome: { fallbackReason: "rate-limit-hold", retryDelayMs: waitMs, statusCode: response.status },
+              phase: "outcome",
+              startedAtMs: attemptStartedAt,
+              status: "error",
+              target: {
+                ...(attempt.model ? { model: attempt.model } : {}),
+                ...(attemptProvider ? { provider: attemptProvider } : {})
+              }
+            });
+            failedAttempts.push({
+              credentialChain: attempt.credentialChain,
+              credentialIds: attempt.credentialIds,
+              delayMs: waitMs,
+              model: attempt.model,
+              statusCode: response.status
+            });
+            recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+            await drainResponseBody(response);
+            attempts.push({ ...plannedAttempt });
+            if (waitMs > 0) {
+              await delay(waitMs, input.signal);
+            }
+            continue;
+          }
+        }
       }
 
       input.trace?.capture({

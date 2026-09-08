@@ -1,5 +1,6 @@
 import {
   ROUTER_FALLBACK_MAX_RETRY_COUNT,
+  ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS,
   ROUTER_SCRIPT_API_VERSION,
   ROUTER_SCRIPT_DEFAULT_TIMEOUT_MS,
   ROUTER_SCRIPT_MAX_TIMEOUT_MS
@@ -75,6 +76,7 @@ export function normalizeRouterFallbackConfig(value: Partial<RouterFallbackConfi
   const record = isPlainRecord(value) ? value : {};
   const mode = parseRouterFallbackMode(record.mode) ?? fallbackConfig.Router.fallback.mode;
   const retryCount = clampNumber(Number(record.retryCount), 0, ROUTER_FALLBACK_MAX_RETRY_COUNT);
+  const rateLimitWaitMs = clampNumber(Number(record.rateLimitWaitMs), 0, ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS);
   const models = Array.isArray(record.models)
     ? uniqueStrings(
       record.models
@@ -86,6 +88,7 @@ export function normalizeRouterFallbackConfig(value: Partial<RouterFallbackConfi
   return {
     mode,
     models,
+    rateLimitWaitMs: Number.isFinite(rateLimitWaitMs) ? rateLimitWaitMs : fallbackConfig.Router.fallback.rateLimitWaitMs,
     retryCount: Number.isFinite(retryCount) ? retryCount : fallbackConfig.Router.fallback.retryCount
   };
 }
