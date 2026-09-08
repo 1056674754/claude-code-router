@@ -187,9 +187,14 @@ class TrayController {
 
     popover.setBounds(menu, false);
     this.ignorePopoverBlurUntil = Date.now() + 120;
-    popover.show();
-    popover.focus();
+    // Re-register the panel with the window server before ordering it front.
+    // After being hidden on another Space (especially a fullscreen one), macOS
+    // keeps the panel parked there and a plain makeKeyAndOrderFront would drag
+    // that old Space forward instead of showing the panel on the active one.
+    popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    popover.showInactive();
     popover.moveTop();
+    popover.focus();
   }
 
   private ensurePopover(): BrowserWindow {
@@ -212,6 +217,9 @@ class TrayController {
       show: false,
       skipTaskbar: true,
       title: `${APP_NAME} Usage`,
+      // Non-activating panel: takes key focus Spotlight-style without activating
+      // the app, so opening it over a fullscreen app does not switch Spaces.
+      type: process.platform === "darwin" ? "panel" : undefined,
       ...trayWindowMaterialOptions(),
       webPreferences: {
         contextIsolation: true,
@@ -226,7 +234,9 @@ class TrayController {
 
     reinforceTrayWindowMaterial(this.popover);
     prepareTrayWindowForSharpRendering(this.popover);
-    this.popover.setAlwaysOnTop(true, "pop-up-menu");
+    // "floating" keeps the popover above regular windows but below screenshot
+    // and screen-capture annotation overlays; "pop-up-menu" renders above them.
+    this.popover.setAlwaysOnTop(true, "floating");
     this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     this.popover.on("blur", () => this.handlePopoverBlur());
     this.popover.on("closed", () => {
