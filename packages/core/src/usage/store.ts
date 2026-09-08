@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { decodeClaudeAppGatewayRouteId } from "@ccr/core/agents/claude-app/gateway-routes";
 import { REQUEST_LOGS_DB_FILE, USAGE_DB_FILE } from "@ccr/core/config/constants";
-import { estimateUsageCostUsd, providerModelPricingForUsage } from "@ccr/core/models/pricing-service";
+import {
+  estimateUsageCostUsd,
+  estimateUsageCostUsdFromLoadedCatalog,
+  preloadUsagePriceCatalog,
+  providerModelPricingForUsage
+} from "@ccr/core/models/pricing-service";
 import { createBetterSqliteDatabase, type BetterSqliteDatabase } from "@ccr/core/storage/sqlite-native";
 import { normalizeUsageInputTokens } from "@ccr/core/usage/normalization";
 import { resolveUsageModelAttribution } from "@ccr/core/usage/model-attribution";
@@ -110,7 +115,7 @@ type UsageSnapshot = UsageNumbers & {
 };
 
 const usageEvents = new EventEmitter();
-const usageStatsRanges = new Set<UsageStatsRange>(["today", "24h", "7d", "30d"]);
+const usageStatsRanges = new Set<UsageStatsRange>(["today", "24h", "7d", "30d", "180d"]);
 const emptyTotals: UsageTotals = {
   avgDurationMs: 0,
   cacheRatio: 0,
@@ -130,6 +135,7 @@ export class UsageStore {
   private initPromise?: Promise<SqlDatabase>;
   private readonly requestLogDbFile?: string;
   private requestLogBackfillFailureLogged = false;
+  private usageCostRepair?: Promise<void>;
 
   constructor(private readonly dbFile: string, options: UsageStoreOptions = {}) {
     this.estimateCost = options.estimateCost ?? estimateUsageCostUsd;
@@ -153,6 +159,11 @@ export class UsageStore {
     const logicalModel = normalizeLabel(event.logicalModel ?? event.model, model);
     const credentialId = normalizeLabel(event.credentialId, "");
     const explicitCost = normalizeOptionalCost(event.costUsd);
+    // Price by the model that actually served the request; the client-facing
+    // model can be an unrelated route alias with a wildly different price.
+    const pricingModel = logicalModel && logicalModel !== "unknown" && logicalModel !== model
+      ? logicalModel
+      : model;
     const estimatedCost = explicitCost === undefined
       ? await this.estimateCost({
           cacheReadTokens,
@@ -160,7 +171,7 @@ export class UsageStore {
           cacheWrite5mTokens,
           cacheWriteTokens,
           inputTokens,
-          model,
+          model: pricingModel,
           outputTokens,
           pricing: event.pricing,
           provider
@@ -282,6 +293,7 @@ export class UsageStore {
     const normalizedRange = normalizeUsageRange(range);
     const since = getRangeSince(normalizedRange, now);
     this.backfillFromRequestLogs(database, since);
+    this.scheduleUsageCostRepair();
     const query = buildUsageWhereClause(since, filter);
 
     return {
@@ -299,7 +311,88 @@ export class UsageStore {
   async getTotalsSince(since: Date, filter: UsageStatsFilter | null | undefined = {}, options: UsageStatsQueryOptions | null | undefined = {}): Promise<UsageTotals> {
     const database = await this.getDatabase();
     this.backfillFromRequestLogs(database, since);
+    this.scheduleUsageCostRepair();
     return readUsageTotals(database, buildUsageWhereClause(since, filter, options));
+  }
+
+  /**
+   * One sweep per process: prices unpriced events and re-prices events whose
+   * cost was estimated from the client-facing route model instead of the
+   * upstream model that actually served the request.
+   */
+  private scheduleUsageCostRepair(): void {
+    this.usageCostRepair ??= this.repairUsageEventCosts().catch((error) => {
+      console.warn(`[usage] Failed to repair historical usage costs: ${formatError(error)}`);
+    });
+  }
+
+  async settleUsageCostRepairForTest(): Promise<void> {
+    await this.usageCostRepair;
+  }
+
+  private async repairUsageEventCosts(): Promise<void> {
+    await preloadUsagePriceCatalog();
+    const database = await this.getDatabase();
+    const pageSize = 500;
+    let cursor = 0;
+    for (let page = 0; page < 200; page += 1) {
+      const rows = queryRows(database, `
+        SELECT
+          id,
+          model,
+          logical_model,
+          provider,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          cache_write_tokens,
+          cost_usd
+        FROM usage_events
+        WHERE id > ? AND (
+          (
+            cost_usd IS NULL
+            AND input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
+          ) OR (
+            cost_usd IS NOT NULL
+            AND cost_source IN ('', 'models.dev', 'litellm', 'openrouter', 'request_log')
+            AND logical_model != ''
+            AND lower(logical_model) != 'unknown'
+            AND lower(logical_model) != lower(model)
+          )
+        )
+        ORDER BY id
+        LIMIT ?
+      `, [cursor, pageSize]);
+      if (rows.length === 0) {
+        return;
+      }
+      const update = database.prepare("UPDATE usage_events SET cost_usd = ?, cost_source = ? WHERE id = ?");
+      database.transaction(() => {
+        for (const row of rows) {
+          cursor = Math.max(cursor, normalizeCount(row.id));
+          const model = String(row.model ?? "").trim();
+          const logicalModel = String(row.logical_model ?? "").trim();
+          const pricingModel = logicalModel && logicalModel.toLowerCase() !== "unknown" && logicalModel.toLowerCase() !== model.toLowerCase()
+            ? logicalModel
+            : model;
+          const cost = estimateUsageCostUsdFromLoadedCatalog({
+            cacheReadTokens: normalizeCount(row.cache_read_tokens),
+            cacheWriteTokens: normalizeCount(row.cache_write_tokens),
+            inputTokens: normalizeCount(row.input_tokens),
+            model: pricingModel,
+            outputTokens: normalizeCount(row.output_tokens),
+            provider: String(row.provider ?? "")
+          });
+          if (!cost || (row.cost_usd !== null && Math.abs(Number(row.cost_usd) - cost.amountUsd) < 1e-9)) {
+            continue;
+          }
+          update.run(cost.amountUsd, cost.source, normalizeCount(row.id));
+        }
+      })();
+      if (rows.length < pageSize) {
+        return;
+      }
+    }
   }
 
   private async getDatabase(): Promise<SqlDatabase> {
@@ -897,7 +990,7 @@ function buildBuckets(
     });
   }
 
-  const count = range === "7d" ? 7 : 30;
+  const count = range === "7d" ? 7 : range === "180d" ? 180 : 30;
   const start = floorDay(now);
   start.setDate(start.getDate() - (count - 1));
   return Array.from({ length: count }, (_, index) => {
@@ -1252,6 +1345,8 @@ function getRangeSince(range: UsageStatsRange, now: Date): Date {
     date.setHours(date.getHours() - 24);
   } else if (range === "7d") {
     date.setDate(date.getDate() - 7);
+  } else if (range === "180d") {
+    date.setDate(date.getDate() - 180);
   } else {
     date.setDate(date.getDate() - 30);
   }

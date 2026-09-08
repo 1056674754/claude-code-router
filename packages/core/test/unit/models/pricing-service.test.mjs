@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   estimateUsageCostUsd,
   estimateUsageCostUsdFromLoadedCatalog,
-  providerModelPricingForUsage
+  providerModelPricingForUsage,
+  resetUsagePriceCatalogForTest
 } from "@ccr/core/models/pricing-service.ts";
 
 const pricing = {
@@ -78,4 +79,84 @@ test("provider model pricing lookup is case-insensitive and accepts a full selec
 
   assert.deepEqual(providerModelPricingForUsage(config, "custom", "CUSTOM/Custom-Model"), pricing);
   assert.equal(providerModelPricingForUsage(config, "other", "custom-model"), undefined);
+});
+
+test("catalog pricing falls back to the undated entry for dated model snapshots", async (t) => {
+  const previousFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = async (input) => {
+    fetched += 1;
+    const url = String(input);
+    if (url.includes("models.dev")) {
+      return new Response(JSON.stringify({
+        deepseek: {
+          models: {
+            "deepseek-v4-flash-vision-exp": {
+              cost: { input: 0.242, output: 0.726 },
+              id: "deepseek-v4-flash-vision-exp"
+            }
+          }
+        }
+      }), { headers: { "content-type": "application/json" } });
+    }
+    return new Response(url.includes("openrouter") ? "{\"data\":[]}" : "{}", {
+      headers: { "content-type": "application/json" }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    resetUsagePriceCatalogForTest();
+  });
+  resetUsagePriceCatalogForTest();
+
+  const result = await estimateUsageCostUsd({
+    inputTokens: 1_000_000,
+    model: "Ctyun/deepseek-v4-flash-vision-exp-0817",
+    outputTokens: 0,
+    provider: "Ctyun"
+  });
+
+  assert.ok(fetched > 0);
+  assert.equal(result?.source, "models.dev");
+  assert.ok(Math.abs((result?.amountUsd ?? 0) - 0.242) < 1e-12);
+});
+
+test("catalog pricing still prefers an exact match over the undated fallback", async (t) => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("models.dev")) {
+      return new Response(JSON.stringify({
+        alibaba: {
+          models: {
+            "qwen3.8-flash": {
+              cost: { input: 0.15, output: 0.47 },
+              id: "qwen3.8-flash"
+            },
+            "qwen3.8-flash-0919": {
+              cost: { input: 0.3, output: 0.94 },
+              id: "qwen3.8-flash-0919"
+            }
+          }
+        }
+      }), { headers: { "content-type": "application/json" } });
+    }
+    return new Response(url.includes("openrouter") ? "{\"data\":[]}" : "{}", {
+      headers: { "content-type": "application/json" }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    resetUsagePriceCatalogForTest();
+  });
+  resetUsagePriceCatalogForTest();
+
+  const result = await estimateUsageCostUsd({
+    inputTokens: 1_000_000,
+    model: "qwen3.8-flash-0919",
+    outputTokens: 0,
+    provider: "Ctyun"
+  });
+
+  assert.ok(Math.abs((result?.amountUsd ?? 0) - 0.3) < 1e-12);
 });

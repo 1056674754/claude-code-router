@@ -203,7 +203,8 @@ export const emptySnapshots: SnapshotMap = {
   today: createEmptySnapshot("today"),
   "24h": createEmptySnapshot("24h"),
   "7d": createEmptySnapshot("7d"),
-  "30d": createEmptySnapshot("30d")
+  "30d": createEmptySnapshot("30d"),
+  "180d": createEmptySnapshot("180d")
 };
 
 export function TrayI18nProvider({ children }: { children: ReactNode }) {
@@ -552,7 +553,7 @@ export function createEmptySnapshot(range: UsageStatsRange): UsageStatsSnapshot 
 
 export function createEmptySeries(range: UsageStatsRange): UsageStatsSnapshot["series"] {
   const now = new Date();
-  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "7d" ? 7 : 30;
+  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "7d" ? 7 : range === "180d" ? 180 : 30;
   return Array.from({ length: count }, (_, index) => {
     const date = new Date(now);
     if (range === "today") {

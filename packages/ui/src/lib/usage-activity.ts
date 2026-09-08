@@ -100,7 +100,7 @@ export function buildTokenActivity(series: UsageSeriesPoint[], options: TokenAct
   return {
     activeDays,
     avgPerDay: totalTokens / dayCount,
-    avgPerWeek: totalTokens / Math.max(1, dayCount / 7),
+    avgPerWeek: totalTokens / Math.max(1 / 7, dayCount / 7),
     cells,
     dayCount,
     longestStreak: longestObservedStreak(totalsByDay, observedStart, observedEnd),

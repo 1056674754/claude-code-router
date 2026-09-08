@@ -10,9 +10,9 @@ import {
 } from "./components/index";
 import { isGatewayProviderEnabled } from "@ccr/core/contracts/app";
 
-type TrayHeaderRange = Exclude<UsageStatsRange, "today">;
+type TrayHeaderRange = Exclude<UsageStatsRange, "180d">;
 
-const trayHeaderRanges: TrayHeaderRange[] = ["24h", "7d", "30d"];
+const trayHeaderRanges: TrayHeaderRange[] = ["today", "24h", "7d", "30d"];
 
 export function TrayApp() {
   const t = useTrayText();
@@ -41,17 +41,18 @@ export function TrayApp() {
     setError("");
     try {
       const filter: UsageStatsFilter = selectedProvider ? { provider: selectedProvider } : { includeProxy: true };
-      const [today, day, week, month, allMonth, config, accounts] = await Promise.all([
+      const [today, day, week, month, halfYear, allMonth, config, accounts] = await Promise.all([
         window.ccr.getUsageStats("today", filter),
         window.ccr.getUsageStats("24h", filter),
         window.ccr.getUsageStats("7d", filter),
         window.ccr.getUsageStats("30d", filter),
+        window.ccr.getUsageStats("180d", filter),
         selectedProvider ? window.ccr.getUsageStats("30d", { includeProxy: true }) : Promise.resolve(undefined),
         window.ccr.getConfig(),
         window.ccr.getProviderAccountSnapshots(selectedProvider)
       ]);
 
-      setSnapshots({ today, "24h": day, "7d": week, "30d": month });
+      setSnapshots({ today, "24h": day, "7d": week, "30d": month, "180d": halfYear });
       setAllSnapshots((current) => ({ ...current, "30d": allMonth ?? month }));
       setAccountSnapshots(accounts);
       setConfiguredProviders(config.Providers.filter((provider) => isGatewayProviderEnabled(provider) && provider.name.trim()));
@@ -142,6 +143,7 @@ export function TrayApp() {
               accountRefreshing={accountRefreshing}
               activeStats={activeStats}
               activeTotals={activeTotals}
+              activitySeries={snapshots["180d"]?.series}
               index={index}
               key={`${widget.id}-${index}`}
               selectedRange={selectedRange}
@@ -175,6 +177,7 @@ function TrayRuntimeWidget({
   accountRefreshing,
   activeStats,
   activeTotals,
+  activitySeries,
   index,
   selectedRange,
   selectedProvider,
@@ -189,6 +192,7 @@ function TrayRuntimeWidget({
   accountRefreshing: boolean;
   activeStats: SnapshotMap["30d"];
   activeTotals: UsageTotals;
+  activitySeries?: SnapshotMap["180d"]["series"];
   index: number;
   selectedRange: TrayHeaderRange;
   selectedProvider?: string;
@@ -230,7 +234,7 @@ function TrayRuntimeWidget({
   }
 
   if (widget.type === "activity") {
-    return <TokenActivityPanel series={activeStats.series} />;
+    return <TokenActivityPanel activitySeries={activitySeries} series={activeStats.series} />;
   }
 
   if (widget.type === "stats") {

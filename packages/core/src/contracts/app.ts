@@ -2217,7 +2217,7 @@ export type RequestLogPage = {
   totalPages: number;
 };
 
-export type UsageStatsRange = "today" | "24h" | "7d" | "30d";
+export type UsageStatsRange = "today" | "24h" | "7d" | "30d" | "180d";
 
 export type UsageStatsFilter = {
   credential?: string;

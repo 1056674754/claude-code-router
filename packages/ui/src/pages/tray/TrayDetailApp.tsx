@@ -30,15 +30,16 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
     setError("");
     try {
       const filter: UsageStatsFilter = provider ? { provider } : { includeProxy: true };
-      const [today, day, week, month, config, accounts] = await Promise.all([
+      const [today, day, week, month, halfYear, config, accounts] = await Promise.all([
         window.ccr.getUsageStats("today", filter),
         window.ccr.getUsageStats("24h", filter),
         window.ccr.getUsageStats("7d", filter),
         window.ccr.getUsageStats("30d", filter),
+        window.ccr.getUsageStats("180d", filter),
         window.ccr.getConfig(),
         window.ccr.getProviderAccountSnapshots(provider)
       ]);
-      setSnapshots({ today, "24h": day, "7d": week, "30d": month });
+      setSnapshots({ today, "24h": day, "7d": week, "30d": month, "180d": halfYear });
       setAccountSnapshots(accounts);
       setTrayWidgets(normalizeTrayWidgets(config.trayWidgets, config.trayWindowModules, config.trayComponentVariants));
       applyTrayThemePreference(config.theme);
@@ -96,7 +97,7 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
       className="tray-shell h-screen w-screen overflow-y-auto p-3"
     >
       <TrayStatusStrip totalTokens={snapshots[range].totals.totalTokens} />
-      <UsageDetailPanel activeStats={snapshots[range]} accountRefreshing={accountRefreshing} accountSnapshots={accountSnapshots} provider={provider} range={range} widgets={trayWidgets} onRefreshAccount={refreshAccountSnapshots} onRangeChange={setRange} />
+      <UsageDetailPanel activeStats={snapshots[range]} accountRefreshing={accountRefreshing} accountSnapshots={accountSnapshots} activitySeries={snapshots["180d"]?.series} provider={provider} range={range} widgets={trayWidgets} onRefreshAccount={refreshAccountSnapshots} onRangeChange={setRange} />
       {loading ? <div className="mt-2 text-[11px] font-medium text-slate-300/55">{t("Syncing usage...")}</div> : null}
       {error ? <div className="mt-3 rounded-[12px] border border-rose-400/20 bg-rose-500/15 px-3 py-2 text-[12px] font-medium text-rose-100">{error}</div> : null}
     </main>

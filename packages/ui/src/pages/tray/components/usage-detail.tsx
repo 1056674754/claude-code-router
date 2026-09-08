@@ -9,6 +9,7 @@ export function UsageDetailPanel({
   activeStats,
   accountSnapshots,
   accountRefreshing,
+  activitySeries,
   provider,
   range,
   widgets,
@@ -18,6 +19,7 @@ export function UsageDetailPanel({
   activeStats: UsageStatsSnapshot;
   accountSnapshots: ProviderAccountSnapshot[];
   accountRefreshing?: boolean;
+  activitySeries?: UsageStatsSnapshot["series"];
   provider?: string;
   range: UsageStatsRange;
   widgets: TrayWidgetConfig[];
@@ -71,7 +73,7 @@ export function UsageDetailPanel({
             );
           }
           if (widget.type === "activity") {
-            return <TokenActivityPanel key={`${widget.id}-${index}`} series={activeStats.series} />;
+            return <TokenActivityPanel key={`${widget.id}-${index}`} activitySeries={activitySeries} series={activeStats.series} />;
           }
           if (widget.type === "token-mix") {
             return <TokenMixPanel key={`${widget.id}-${index}`} totals={totals} variant={(widget.variant ?? defaultTrayWidgetVariant("token-mix")) as TrayComponentVariants["tokenMix"]} />;

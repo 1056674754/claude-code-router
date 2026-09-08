@@ -144,12 +144,19 @@ export function AnimatedUsageChart({
 }
 
 export function TokenActivityPanel({
+  activitySeries,
   series
 }: {
+  activitySeries?: UsageStatsSnapshot["series"];
   series: UsageStatsSnapshot["series"];
 }) {
   const t = useTrayText();
-  const activity = buildTokenActivity(series, { maxWeeks: 14, minWeeks: 10 });
+  // The activity calendar tracks its own long window of real history instead
+  // of the currently selected range; it renders as a fixed-width calendar.
+  const activity = buildTokenActivity(
+    activitySeries && activitySeries.length > 0 ? activitySeries : series,
+    { minWeeks: 24, maxWeeks: 24 }
+  );
 
   return (
     <div className="tray-panel min-w-0 p-2.5">
@@ -211,29 +218,33 @@ function TokenActivityGrid({
   const t = useTrayText();
   const dayLabels = [t("M"), "", t("W"), "", t("F"), "", ""];
   const cellGap = 3;
-  const cellSize = 9;
+  const maxCellPitch = 24;
   const labelColumnWidth = 14;
 
   return (
     <div className="min-w-0 overflow-visible">
-      <div className="w-max">
+      <div style={{ maxWidth: `${labelColumnWidth + activity.weekCount * maxCellPitch}px` }}>
         <div
           className="mb-1 grid text-[8px] font-medium text-slate-500"
           style={{
             columnGap: `${cellGap}px`,
-            gridTemplateColumns: `repeat(${activity.weekCount}, ${cellSize}px)`,
+            gridTemplateColumns: `repeat(${activity.weekCount}, minmax(0, 1fr))`,
             marginLeft: `${labelColumnWidth + cellGap}px`
           }}
         >
-          {activity.months.map((month) => (
-            <span
-              className="truncate"
-              key={`${month.label}-${month.weekIndex}`}
-              style={{ gridColumn: `${month.weekIndex + 1} / span ${Math.min(3, activity.weekCount - month.weekIndex)}` }}
-            >
-              {month.label}
-            </span>
-          ))}
+          {activity.months.map((month, index) => {
+            const nextWeek = activity.months[index + 1]?.weekIndex ?? activity.weekCount;
+            const span = Math.max(1, Math.min(3, nextWeek - month.weekIndex, activity.weekCount - month.weekIndex));
+            return (
+              <span
+                className="truncate"
+                key={`${month.label}-${month.weekIndex}`}
+                style={{ gridColumn: `${month.weekIndex + 1} / span ${span}` }}
+              >
+                {month.label}
+              </span>
+            );
+          })}
         </div>
         <div
           className="grid"
@@ -241,8 +252,8 @@ function TokenActivityGrid({
           aria-label={`${t("Activity")} ${t("Tokens")}`}
           style={{
             gap: `${cellGap}px`,
-            gridTemplateColumns: `${labelColumnWidth}px repeat(${activity.weekCount}, ${cellSize}px)`,
-            gridTemplateRows: `repeat(7, ${cellSize}px)`
+            gridTemplateColumns: `${labelColumnWidth}px repeat(${activity.weekCount}, minmax(0, 1fr))`,
+            gridTemplateRows: "repeat(7, auto)"
           }}
         >
           {dayLabels.map((label, index) => (
@@ -258,7 +269,7 @@ function TokenActivityGrid({
           <Tooltip
             aria-label={`${cell.dateLabel}: ${formatActivityTokenCount(cell.totalTokens)} ${t("tokens")}`}
             align={cell.weekIndex <= 1 ? "start" : cell.weekIndex >= activity.weekCount - 2 ? "end" : "center"}
-            className="rounded-[3px]"
+            className="aspect-square w-full rounded-[3px]"
             content={(
               <>
                 <span className="block font-bold">{cell.dateLabel}</span>
@@ -269,7 +280,7 @@ function TokenActivityGrid({
             key={cell.dateKey}
             side={cell.dayIndex <= 1 ? "bottom" : "top"}
             style={{
-              backgroundColor: trayActivityColor(cell.intensity, cell.inObservedRange),
+              backgroundColor: trayActivityColor(cell.intensity, cell.inObservedRange, cell.date > new Date()),
               gridColumn: cell.weekIndex + 2,
               gridRow: cell.dayIndex + 1
             }}
@@ -285,12 +296,16 @@ function formatActivityTokenCount(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(Math.round(Math.max(0, value)));
 }
 
-function trayActivityColor(intensity: TokenActivityCell["intensity"], inRange: boolean): string {
-  if (!inRange) return "rgba(10,132,255,.045)";
-  if (intensity === 0) return "rgba(10,132,255,.12)";
-  if (intensity === 1) return "rgba(10,132,255,.3)";
-  if (intensity === 2) return "rgba(10,132,255,.5)";
-  if (intensity === 3) return "rgba(10,132,255,.72)";
+function trayActivityColor(
+  intensity: TokenActivityCell["intensity"],
+  inRange: boolean,
+  isFuture = false
+): string {
+  if (!inRange) return isFuture ? "rgba(10,132,255,.04)" : "rgba(10,132,255,.09)";
+  if (intensity === 0) return "rgba(10,132,255,.15)";
+  if (intensity === 1) return "rgba(10,132,255,.32)";
+  if (intensity === 2) return "rgba(10,132,255,.52)";
+  if (intensity === 3) return "rgba(10,132,255,.74)";
   return "rgba(10,132,255,.96)";
 }
 

@@ -80,6 +80,11 @@ export function usagePriceCatalogNeedsRefresh(): boolean {
   return !catalog || Date.now() - catalog.loadedAt >= catalogTtlMs;
 }
 
+export function resetUsagePriceCatalogForTest(): void {
+  catalog = undefined;
+  catalogPromise = undefined;
+}
+
 /** Never performs I/O. Returns undefined when no fresh catalog is loaded. */
 export function estimateUsageCostUsdFromLoadedCatalog(
   input: UsageCostInput
@@ -448,13 +453,33 @@ function modelCandidateKeys(model: string, provider: string | undefined): string
   const rawModel = model.trim();
   const rawProvider = provider?.trim() || "";
   const providerPrefixes = providerModelPrefixes(rawProvider);
+  const baseModels = unique([rawModel, lastPathSegment(rawModel)].filter(Boolean));
   const values = [
-    rawModel,
-    lastPathSegment(rawModel),
-    ...providerPrefixes.map((prefix) => `${prefix}/${rawModel}`),
-    ...providerPrefixes.map((prefix) => `${prefix}/${lastPathSegment(rawModel)}`)
+    ...baseModels,
+    ...providerPrefixes.flatMap((prefix) => baseModels.map((candidate) => `${prefix}/${candidate}`))
   ];
+  // Dated snapshots (e.g. deepseek-v4-flash-vision-exp-0817) fall back to the
+  // undated catalog entry when the exact snapshot is not priced.
+  const undatedModels = baseModels.flatMap((candidate) => undatedModelVariants(candidate));
+  values.push(
+    ...undatedModels,
+    ...providerPrefixes.flatMap((prefix) => undatedModels.map((candidate) => `${prefix}/${candidate}`))
+  );
   return unique(values.map(normalizeKey).filter(Boolean));
+}
+
+function undatedModelVariants(model: string): string[] {
+  const variants: string[] = [];
+  let current = model;
+  for (let index = 0; index < 2; index += 1) {
+    const stripped = current.replace(/-\d{2,8}$/, "");
+    if (!stripped || stripped === current || !stripped.includes("-")) {
+      break;
+    }
+    variants.push(stripped);
+    current = stripped;
+  }
+  return variants;
 }
 
 function providerModelPrefixes(provider: string): string[] {
