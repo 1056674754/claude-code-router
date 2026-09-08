@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { APP_NAME, IPC_CHANNELS } from "@ccr/core/config/constants";
+import { loadPersistedAppSetting, replacePersistedAppSetting } from "@ccr/core/config/config-repository";
 import { configureClaudeDesignWindowCdp, type ClaudeDesignWindowCdpOptions } from "./claude-design-window";
 
 type WindowName = "main" | string;
@@ -14,6 +15,7 @@ type PluginAppWindowOptions = {
   url: string;
 };
 
+const mainWindowBoundsSettingKey = "mainWindowBounds";
 const titleBarHeight = 46;
 const macOSTrafficLightDiameter = 14;
 const mainWindowTrafficLightPosition = {
@@ -42,11 +44,21 @@ const pluginAppScreenshotCaptures = new WeakSet<object>();
 const pluginAppScriptRuns = new WeakSet<object>();
 
 class WindowsManager {
-  private onboardingFinished = false;
+  private mainWindowBounds?: WindowBounds;
+  private mainWindowBoundsSaveTimer?: NodeJS.Timeout;
   private windows = new Map<WindowName, BrowserWindow>();
 
-  setOnboardingFinished(finished: boolean): void {
-    this.onboardingFinished = finished;
+  restoreMainWindowBounds(bounds: unknown): void {
+    this.mainWindowBounds = readWindowBounds(bounds);
+  }
+
+  private rememberMainWindowBounds(window: BrowserWindow): void {
+    if (window.isDestroyed() || window.isMinimized() || window.isMaximized() || window.isFullScreen()) {
+      return;
+    }
+    const bounds = window.getBounds();
+    this.mainWindowBounds = { height: bounds.height, width: bounds.width, x: bounds.x, y: bounds.y };
+    void replacePersistedAppSetting(mainWindowBoundsSettingKey, this.mainWindowBounds).catch(() => undefined);
   }
 
   createMainWindow(): BrowserWindow {
@@ -56,7 +68,7 @@ class WindowsManager {
       return existing;
     }
 
-    const bounds = getMainWindowInitialBounds(this.onboardingFinished);
+    const bounds = getMainWindowInitialBounds(this.mainWindowBounds);
 
     const window = new BrowserWindow({
       ...bounds,
@@ -86,14 +98,32 @@ class WindowsManager {
         window.show();
       }
     });
+    const scheduleMainWindowBoundsSave = () => {
+      if (this.mainWindowBoundsSaveTimer) {
+        clearTimeout(this.mainWindowBoundsSaveTimer);
+      }
+      this.mainWindowBoundsSaveTimer = setTimeout(() => {
+        this.mainWindowBoundsSaveTimer = undefined;
+        this.rememberMainWindowBounds(window);
+      }, 600);
+    };
+    window.on("resize", scheduleMainWindowBoundsSave);
+    window.on("move", scheduleMainWindowBoundsSave);
     window.on("close", (event) => {
+      if (this.mainWindowBoundsSaveTimer) {
+        clearTimeout(this.mainWindowBoundsSaveTimer);
+        this.mainWindowBoundsSaveTimer = undefined;
+      }
+      this.rememberMainWindowBounds(window);
       if (!shouldHideMainWindowOnClose()) {
         return;
       }
       event.preventDefault();
       window.hide();
     });
-    window.on("closed", () => this.windows.delete("main"));
+    window.on("closed", () => {
+      this.windows.delete("main");
+    });
     window.webContents.on("page-title-updated", (_event, title) => {
       window.setTitle(title || APP_NAME);
     });
@@ -252,14 +282,6 @@ class WindowsManager {
     return window;
   }
 
-  resizeMainWindowToScreenSize(): void {
-    const window = this.getWindow("main");
-    if (!window) {
-      return;
-    }
-    window.setBounds(getMainWindowScreenBounds());
-  }
-
   getWindow(name: WindowName): BrowserWindow | undefined {
     const window = this.windows.get(name);
     if (!window || window.isDestroyed()) {
@@ -284,6 +306,14 @@ class WindowsManager {
 
 const windowsManager = new WindowsManager();
 
+export async function restorePersistedMainWindowBounds(): Promise<void> {
+  try {
+    windowsManager.restoreMainWindowBounds(await loadPersistedAppSetting(mainWindowBoundsSettingKey));
+  } catch {
+    // A failed bounds read just falls back to the default window size.
+  }
+}
+
 export default windowsManager;
 
 let appIsQuitting = false;
@@ -301,28 +331,54 @@ function fitWindowSize(preferred: number, minimum: number, available: number): n
   return Math.max(minimum, Math.min(preferred, available > 0 ? available : preferred));
 }
 
-function getMainWindowInitialBounds(onboardingFinished: boolean): WindowBounds {
-  const { height: availableHeight, width: availableWidth } = screen.getPrimaryDisplay().workAreaSize;
-
-  if (onboardingFinished) {
-    return getMainWindowScreenBounds();
+function getMainWindowInitialBounds(persisted?: WindowBounds): WindowBounds {
+  if (persisted) {
+    return clampWindowBoundsToWorkArea(persisted);
   }
-
+  const { height: availableHeight, width: availableWidth } = screen.getPrimaryDisplay().workAreaSize;
   return {
     height: fitWindowSize(mainWindowDefaultHeight, mainWindowMinHeight, availableHeight - mainWindowMargin),
     width: fitWindowSize(mainWindowDefaultWidth, mainWindowMinWidth, availableWidth - mainWindowMargin)
   };
 }
 
-function getMainWindowScreenBounds(): Required<WindowBounds> {
-  const { workArea } = screen.getPrimaryDisplay();
-
+function clampWindowBoundsToWorkArea(bounds: WindowBounds): Required<WindowBounds> {
+  const { workArea } = screen.getDisplayMatching({
+    height: bounds.height,
+    width: bounds.width,
+    x: bounds.x ?? 0,
+    y: bounds.y ?? 0
+  });
+  const width = fitWindowSize(bounds.width, mainWindowMinWidth, workArea.width);
+  const height = fitWindowSize(bounds.height, mainWindowMinHeight, workArea.height);
   return {
-    height: Math.max(mainWindowMinHeight, workArea.height),
-    width: Math.max(mainWindowMinWidth, workArea.width),
-    x: workArea.x,
-    y: workArea.y
+    height,
+    width,
+    x: clampNumber(bounds.x ?? workArea.x, workArea.x, Math.max(workArea.x, workArea.x + workArea.width - width)),
+    y: clampNumber(bounds.y ?? workArea.y, workArea.y, Math.max(workArea.y, workArea.y + workArea.height - height))
   };
+}
+
+function readWindowBounds(value: unknown): WindowBounds | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const width = Number(record.width);
+  const height = Number(record.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < mainWindowMinWidth || height < mainWindowMinHeight) {
+    return undefined;
+  }
+  const bounds: WindowBounds = { height, width };
+  const x = Number(record.x);
+  const y = Number(record.y);
+  if (Number.isFinite(x)) {
+    bounds.x = x;
+  }
+  if (Number.isFinite(y)) {
+    bounds.y = y;
+  }
+  return bounds;
 }
 
 function getPluginAppWindowInitialBounds(): WindowBounds {
