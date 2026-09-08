@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { applyClaudeAppGatewayConfig } from "@ccr/core/agents/claude-app/gateway-service.ts";
-import { resolveClaudeAppGatewayRouteModel } from "@ccr/core/agents/claude-app/gateway-routes.ts";
+import { buildClaudeAppGatewayModelRoutes, resolveClaudeAppGatewayRouteModel } from "@ccr/core/agents/claude-app/gateway-routes.ts";
 
 test("Claude App gateway config keeps 3P mode signed out of Claude.ai", () => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "ccr-claude-app-gateway-config-"));
@@ -101,3 +101,58 @@ function createConfig(overrides = {}) {
 function readJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
+
+function writeJson(file, value) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+}
+
+test("Claude App gateway apply preserves coworkEgressAllowedHosts and manual profile edits", () => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ccr-claude-app-gateway-egress-"));
+  const activeDataDir = `${dataDir}-3p`;
+
+  try {
+    for (const dir of [dataDir, activeDataDir]) {
+      writeJson(path.join(dir, "configLibrary", "8f69f2f1-3275-4ad8-9317-4aa7e972f311.json"), {
+        coworkEgressAllowedHosts: ["*"],
+        inferenceModels: []
+      });
+    }
+    applyClaudeAppGatewayConfig(createConfig(), { backup: false, dataDir });
+
+    for (const dir of [dataDir, activeDataDir]) {
+      const profile = readJson(path.join(dir, "configLibrary", "8f69f2f1-3275-4ad8-9317-4aa7e972f311.json"));
+      assert.deepEqual(profile.coworkEgressAllowedHosts, ["*"]);
+    }
+  } finally {
+    rmSync(dataDir, { force: true, recursive: true });
+    rmSync(activeDataDir, { force: true, recursive: true });
+  }
+});
+
+test("Claude App gateway apply writes only the declared claudeAppDesktop slots", () => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ccr-claude-app-gateway-slots-"));
+  const activeDataDir = `${dataDir}-3p`;
+  const config = createConfig({
+    Providers: [{ models: ["glm-5.3", "glm-5.3-flash", "spare-model"], name: "Zhipu" }],
+    claudeAppDesktop: {
+      models: [
+        "claude-fable-5",
+        { label: "GLM 5.3", name: "Zhipu/glm-5.3" }
+      ]
+    }
+  });
+
+  try {
+    const { result } = applyClaudeAppGatewayConfig(config, { backup: false, dataDir });
+    const profile = readJson(result.configLibraryFile);
+    const routes = buildClaudeAppGatewayModelRoutes(config);
+    const route = routes.find((item) => item.targetModel.toLowerCase().endsWith("glm-5.3"));
+
+    assert.deepEqual(profile.inferenceModels.map((item) => item.name), ["claude-fable-5", route.id]);
+    assert.deepEqual(profile.inferenceModels.map((item) => item.labelOverride), ["claude-fable-5", "GLM 5.3"]);
+  } finally {
+    rmSync(dataDir, { force: true, recursive: true });
+    rmSync(activeDataDir, { force: true, recursive: true });
+  }
+});
