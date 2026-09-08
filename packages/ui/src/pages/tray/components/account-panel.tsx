@@ -18,16 +18,12 @@ export function AccountSummaryPanel({
 }) {
   const t = useTrayText();
   const snapshot = snapshots
-    .filter((snapshot) => snapshot.meters.length > 0 || snapshot.status === "error")
+    .filter((snapshot) => snapshot.meters.length > 0 || snapshot.status === "error" || snapshot.status === "unsupported")
     .sort(compareAccountSnapshots)
     [0];
 
   if (!snapshot) {
-    return (
-      <div className="tray-panel-subtle px-3 py-2 text-[11px] font-medium text-slate-400">
-        {t("No account data configured")}
-      </div>
-    );
+    return null;
   }
 
   const meters = accountMetersForDisplay(snapshot, variant === "stacked" ? 3 : 2);
@@ -52,7 +48,7 @@ export function AccountSummaryPanel({
       {meters.length > 0 ? (
         <AccountMeters meters={meters} status={snapshot.status} variant={variant} />
       ) : (
-        <div className="truncate text-[10px] font-medium text-slate-400">{snapshot.message || snapshot.errors?.[0]?.message || t("Unavailable")}</div>
+        <div className="truncate text-[10px] font-medium text-slate-400">{t(snapshot.message || snapshot.errors?.[0]?.message || "Unavailable")}</div>
       )}
     </div>
   );

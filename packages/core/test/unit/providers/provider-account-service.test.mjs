@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  effectiveProviderAccountConfigForTest,
   localAgentProviderAccountCredentialForTest,
   localCodexAccountCredentialForTest,
+  providerAccountTargetsForTest,
   setProviderAccountWebContentFetchHandler,
   testProviderAccountConnector
 } from "@ccr/core/providers/account-service.ts";
@@ -480,6 +482,92 @@ test("ZCode local account credential falls back to the live config when plugin i
   });
 
   assert.equal(credential?.apiKey, "zcode-live-key");
+});
+
+test("providers without account config inherit an enabled preset account", () => {
+  const inherited = effectiveProviderAccountConfigForTest(
+    { api_base_url: "https://open.bigmodel.cn/api/anthropic" },
+    undefined
+  );
+
+  assert.equal(inherited?.enabled, true);
+  assert.equal(inherited?.connectors?.[0]?.type, "http-json");
+  assert.equal(inherited?.connectors?.[0]?.endpoint, "https://open.bigmodel.cn/api/monitor/usage/quota/limit");
+  assert.equal(
+    effectiveProviderAccountConfigForTest({ api_base_url: "https://vendor.example.com/v1" }, undefined),
+    undefined
+  );
+});
+
+test("explicitly disabled account config suppresses preset inheritance", () => {
+  assert.equal(
+    effectiveProviderAccountConfigForTest(
+      { api_base_url: "https://open.bigmodel.cn/api/anthropic" },
+      { connectors: [{ auth: "provider-api-key", type: "standard" }], enabled: false }
+    ),
+    undefined
+  );
+});
+
+test("enabled account configs keep resolving preset connectors at runtime", () => {
+  const resolved = effectiveProviderAccountConfigForTest(
+    { api_base_url: "https://open.bigmodel.cn/api/anthropic" },
+    { connectors: [{ auth: "provider-api-key", type: "standard" }], enabled: true, refreshIntervalMs: 60000 }
+  );
+
+  assert.equal(resolved?.enabled, true);
+  assert.equal(resolved?.connectors?.[0]?.endpoint, "https://open.bigmodel.cn/api/monitor/usage/quota/limit");
+  assert.equal(resolved?.refreshIntervalMs, 60000);
+
+  const custom = effectiveProviderAccountConfigForTest(
+    { api_base_url: "https://open.bigmodel.cn/api/anthropic" },
+    {
+      connectors: [
+        {
+          auth: "none",
+          endpoint: "https://vendor.example.com/account",
+          mapping: { meters: [] },
+          type: "http-json"
+        }
+      ],
+      enabled: true
+    }
+  );
+
+  assert.equal(custom?.connectors?.[0]?.endpoint, "https://vendor.example.com/account");
+});
+
+test("snapshot targets inherit preset accounts only for keyed providers", () => {
+  const targets = providerAccountTargetsForTest({
+    api_base_url: "https://open.bigmodel.cn/api/anthropic",
+    api_key: "zhipu-key",
+    models: [],
+    name: "Zhipu GLM"
+  });
+
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0]?.account?.connectors?.[0]?.endpoint, "https://open.bigmodel.cn/api/monitor/usage/quota/limit");
+
+  assert.equal(
+    providerAccountTargetsForTest({
+      api_base_url: "https://open.bigmodel.cn/api/anthropic",
+      api_key: "",
+      models: [],
+      name: "Zhipu GLM"
+    }).length,
+    0
+  );
+
+  assert.equal(
+    providerAccountTargetsForTest({
+      account: { connectors: [{ auth: "provider-api-key", type: "standard" }], enabled: false },
+      api_base_url: "https://open.bigmodel.cn/api/anthropic",
+      api_key: "zhipu-key",
+      models: [],
+      name: "Zhipu GLM"
+    }).length,
+    0
+  );
 });
 
 function useTemporaryCodexHome(t, prefix) {
