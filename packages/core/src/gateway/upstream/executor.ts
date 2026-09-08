@@ -869,8 +869,54 @@ function usageAwareOpenAiChatAttemptBody(input: {
   }
   const sanitizedBody = stripUnsupportedOpenAiRequestParameters(input.body);
   return providerProtocol === "openai_chat_completions"
-    ? usageAwareOpenAiChatBody(sanitizedBody)
+    ? usageAwareOpenAiChatBody(adaptAnthropicImageBlocksForOpenAiChat(sanitizedBody))
     : sanitizedBody;
+}
+
+// The bundled gateway runtime maps anthropic text but has no parser for
+// anthropic image blocks, so openai_chat targets silently lose images;
+// translate the image blocks to OpenAI data-url parts here.
+function adaptAnthropicImageBlocksForOpenAiChat(body: Buffer | undefined): Buffer | undefined {
+  const parsedBody = parseJsonObjectSafe(body);
+  if (!parsedBody || !Array.isArray(parsedBody.messages)) {
+    return body;
+  }
+  let changed = false;
+  const messages = parsedBody.messages.map((message: unknown) => {
+    if (!isRecord(message) || !Array.isArray(message.content)) {
+      return message;
+    }
+    let messageChanged = false;
+    const content = message.content.map((block: unknown) => {
+      const adapted = openAiChatImageBlockFromAnthropic(block);
+      if (adapted !== block) {
+        messageChanged = true;
+      }
+      return adapted;
+    });
+    if (!messageChanged) {
+      return message;
+    }
+    changed = true;
+    return { ...message, content };
+  });
+  if (!changed) {
+    return body;
+  }
+  return serializeJsonBody({ ...parsedBody, messages });
+}
+
+function openAiChatImageBlockFromAnthropic(block: unknown): unknown {
+  if (!isRecord(block) || block.type !== "image" || !isRecord(block.source)) {
+    return block;
+  }
+  if (block.source.type === "base64" && typeof block.source.media_type === "string" && typeof block.source.data === "string") {
+    return { type: "image_url", image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } };
+  }
+  if (block.source.type === "url" && typeof block.source.url === "string") {
+    return { type: "image_url", image_url: { url: block.source.url } };
+  }
+  return block;
 }
 
 

@@ -1,4 +1,4 @@
-import type { AppConfig } from "@ccr/core/contracts/app";
+import type { AppConfig, ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
 import { availableGatewayModelIds, normalizeProfileScopeValue } from "@ccr/core/contracts/app";
 import { findModelCatalogEntry, findProviderModelCatalogEntry, type ModelCatalogEntry } from "@ccr/core/gateway/model-catalog";
 import { modelRegistryForConfig } from "@ccr/core/routing/model-registry";
@@ -120,6 +120,67 @@ export function buildClaudeAppGatewayInferenceModels(
     name: route.id,
     ...(route.oneMillionContext ? { supports1m: true as const } : {})
   }));
+}
+
+export function buildClaudeAppDesktopInferenceModels(
+  config: Pick<AppConfig, "Providers" | "profile" | "virtualModelProfiles" | "claudeAppDesktop">,
+  options: ClaudeAppGatewayModelRouteOptions = {}
+): ClaudeAppGatewayInferenceModel[] {
+  const routes = buildClaudeAppGatewayModelRoutes(config, options);
+  const declared = config.claudeAppDesktop?.models ?? [];
+  if (declared.length === 0) {
+    return routes.map(claudeAppGatewayRouteToInferenceModel);
+  }
+  const models: ClaudeAppGatewayInferenceModel[] = [];
+  const seen = new Set<string>();
+  for (const slot of declared) {
+    const entry: ClaudeAppDesktopModelSlot = typeof slot === "string" ? { name: slot } : slot;
+    const label = entry.label?.trim();
+    const route = matchClaudeAppDesktopRoute(routes, entry.name);
+    const model: ClaudeAppGatewayInferenceModel = route
+      ? {
+          labelOverride: label || route.displayName,
+          name: route.id,
+          ...(route.oneMillionContext || entry.supports1m === true ? { supports1m: true as const } : {})
+        }
+      : {
+          // Unknown selectors pass through as bare menu slots; the gateway's
+          // Router rules decide where they route at request time.
+          labelOverride: label || entry.name.trim(),
+          name: entry.name.trim(),
+          ...(entry.supports1m === true ? { supports1m: true as const } : {})
+        };
+    const key = model.name.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    models.push(model);
+  }
+  return models.length > 0 ? models : routes.map(claudeAppGatewayRouteToInferenceModel);
+}
+
+function claudeAppGatewayRouteToInferenceModel(route: ClaudeAppGatewayModelRoute): ClaudeAppGatewayInferenceModel {
+  return {
+    labelOverride: route.displayName,
+    name: route.id,
+    ...(route.oneMillionContext ? { supports1m: true as const } : {})
+  };
+}
+
+function matchClaudeAppDesktopRoute(
+  routes: ClaudeAppGatewayModelRoute[],
+  name: string
+): ClaudeAppGatewayModelRoute | undefined {
+  const wantsOneMillionContext = hasClaudeAppGatewayOneMillionContextSuffix(name);
+  const base = stripClaudeAppGatewayOneMillionContextSuffix(name).toLowerCase();
+  return routes.find((route) => {
+    if (stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase() !== base) {
+      return false;
+    }
+    return wantsOneMillionContext ? route.oneMillionContext : true;
+  }) ?? routes.find((route) => wantsOneMillionContext === route.oneMillionContext &&
+    claudeAppGatewayRouteMatchIds(route).some((id) => stripClaudeAppGatewayOneMillionContextSuffix(id).toLowerCase() === base));
 }
 
 export function hasClaudeAppGatewayOneMillionContextSuffix(id: string): boolean {
@@ -367,6 +428,12 @@ function claudeAppGatewayDisplayNames(
 ): string[] {
   const baseNames = models.map((model) => {
     const targetModel = stripClaudeAppGatewayOneMillionContextSuffix(model);
+    // An explicitly configured display name wins outright and is shown verbatim;
+    // catalog/base names keep the historical "Provider/Name" menu label.
+    const configuredDisplayName = claudeAppGatewayProviderConfiguredDisplayName(targetModel, config);
+    if (configuredDisplayName) {
+      return configuredDisplayName;
+    }
     const catalogDisplayName = claudeAppGatewayProviderCatalogDisplayName(targetModel, config);
     return claudeAppGatewayDisplayNameWithProvider(
       targetModel,
@@ -389,6 +456,21 @@ function claudeAppGatewayDisplayNames(
     duplicateIndexes.set(key, duplicateIndex);
     return `${baseName} #${duplicateIndex}`;
   });
+}
+
+function claudeAppGatewayProviderConfiguredDisplayName(
+  model: string,
+  config: Pick<AppConfig, "Providers" | "virtualModelProfiles">
+): string | undefined {
+  const resolved = claudeAppGatewayResolvedProviderModel(model, config);
+  if (!resolved) {
+    return undefined;
+  }
+  const displayNames = resolved.provider.modelDisplayNames;
+  const configured = displayNames?.[resolved.model] ??
+    Object.entries(displayNames ?? {})
+      .find(([candidate]) => candidate.trim().toLowerCase() === resolved.model.trim().toLowerCase())?.[1];
+  return configured?.trim() || undefined;
 }
 
 function claudeAppGatewayProviderCatalogDisplayName(

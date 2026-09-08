@@ -6,7 +6,7 @@ import { resolveRuntimeAppPath } from "@ccr/core/runtime/app-paths";
 import { saveAppConfig } from "@ccr/core/config/config";
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import {
-  buildClaudeAppGatewayInferenceModels,
+  buildClaudeAppDesktopInferenceModels,
   type ClaudeAppGatewayInferenceModel,
   type ClaudeAppGatewayModelRouteOptions
 } from "@ccr/core/agents/claude-app/gateway-routes";
@@ -129,7 +129,7 @@ export function applyClaudeAppGatewayConfig(config: AppConfig, options: ClaudeAp
   const paths = getClaudeAppGatewayPaths(options.dataDir);
   const activePaths = getClaudeAppActiveGatewayPaths(options.dataDir, paths);
   const endpoint = gatewayEndpoint(state.config);
-  const models = buildClaudeAppGatewayInferenceModels(state.config, {
+  const models = buildClaudeAppDesktopInferenceModels(state.config, {
     ...claudeAppGatewayModelRouteOptions,
     defaultTargetModel: options.defaultModel
   });

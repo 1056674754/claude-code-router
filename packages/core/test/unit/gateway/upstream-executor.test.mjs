@@ -535,3 +535,71 @@ test("rate-limit hold surfaces the 429 once the wait budget is exhausted", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("openai_chat targets receive anthropic image blocks as data-url image_url parts", () => {
+  const config = {
+    Providers: [
+      {
+        capabilities: [{ baseUrl: "https://ai.ctaigw.example/v1", type: "openai_chat_completions" }],
+        credentials: [{ apiKey: "ctyun-key", id: "ctyun-main" }],
+        id: "ctyun",
+        models: ["glm-4.6v"],
+        name: "Ctyun"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] },
+    profile: {
+      enabled: true,
+      profiles: [
+        {
+          agent: "claude-code",
+          enabled: true,
+          id: "claude-code-ctyun",
+          model: "Ctyun/glm-4.6v",
+          name: "Claude Code Ctyun",
+          scope: "global"
+        }
+      ]
+    },
+    virtualModelProfiles: []
+  };
+  const route = buildClaudeAppGatewayModelRoutes(config).find((item) => item.targetModel === "Ctyun/glm-4.6v");
+  assert.ok(route);
+
+  const rewrite = prepareClaudeAppDiscoveredModelRequest(
+    config,
+    "POST",
+    "/v1/messages",
+    Buffer.from(JSON.stringify({
+      max_tokens: 16,
+      messages: [
+        {
+          content: [
+            { text: "What color?", type: "text" },
+            { source: { data: "aGVsbG8=", media_type: "image/png", type: "base64" }, type: "image" },
+            { source: { type: "url", url: "https://example.com/cat.png" }, type: "image" }
+          ],
+          role: "user"
+        }
+      ],
+      model: route.id
+    }))
+  );
+  assert.ok(rewrite);
+  assert.equal(rewrite.routedModel, "Ctyun/glm-4.6v");
+
+  const attempt = prepareGatewayUpstreamAttemptForTest({
+    body: JSON.parse(rewrite.body.toString("utf8")),
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: rewrite.routedModel
+  });
+
+  assert.equal(attempt.credentialProtocol, "openai_chat_completions");
+  const content = attempt.body?.messages?.[0]?.content;
+  assert.equal(content?.[0]?.type, "text");
+  assert.deepEqual(content?.[1], { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } });
+  assert.deepEqual(content?.[2], { type: "image_url", image_url: { url: "https://example.com/cat.png" } });
+});

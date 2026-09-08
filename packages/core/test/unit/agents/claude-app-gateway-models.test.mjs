@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildClaudeAppDesktopInferenceModels,
   buildClaudeAppGatewayInferenceModels,
   buildClaudeAppGatewayModelRoutes,
   inferClaudeAppGatewayTargetModel,
@@ -742,4 +743,66 @@ test("Claude App discovery prefers provider context metadata over the static cat
   assert.equal(model.max_input_tokens, 244800);
   assert.equal(model.capabilities.context_management.max_input_tokens, 244800);
   assert.equal(model.capabilities.context_window.max_input_tokens, 244800);
+});
+
+test("claudeAppDesktop slots narrow the Claude App menu to declared entries", () => {
+  const base = createConfig({
+    providers: [
+      { models: ["glm-5.3", "glm-5.3-flash"], name: "Zhipu" },
+      { models: ["deepseek-v4-vision"], name: "Ctyun" }
+    ]
+  });
+  const all = buildClaudeAppGatewayInferenceModels(base);
+  assert.ok(all.length >= 3);
+
+  const route = buildClaudeAppGatewayModelRoutes(base).find((item) =>
+    item.targetModel.toLowerCase().endsWith("glm-5.3")
+  );
+  assert.ok(route);
+
+  const config = {
+    ...base,
+    claudeAppDesktop: {
+      models: [
+        "claude-fable-5",
+        { label: "GLM 5.3", name: "Zhipu/glm-5.3" }
+      ]
+    }
+  };
+  const models = buildClaudeAppDesktopInferenceModels(config);
+  assert.deepEqual(models.map((item) => item.name), ["claude-fable-5", route.id]);
+  assert.deepEqual(models.map((item) => item.labelOverride), ["claude-fable-5", "GLM 5.3"]);
+
+  // Unknown selectors pass through as bare slots instead of being dropped.
+  const passthrough = buildClaudeAppDesktopInferenceModels({
+    ...base,
+    claudeAppDesktop: { models: ["claude-fable-5", "claude-fable-5"] }
+  });
+  assert.deepEqual(passthrough.map((item) => item.name), ["claude-fable-5"]);
+});
+
+test("claudeAppDesktop without declared models keeps the full menu", () => {
+  const base = createConfig({
+    providers: [{ models: ["glm-5.3"], name: "Zhipu" }]
+  });
+  const config = { ...base, claudeAppDesktop: { models: [] } };
+  assert.deepEqual(
+    buildClaudeAppDesktopInferenceModels(config),
+    buildClaudeAppGatewayInferenceModels(base)
+  );
+});
+
+test("provider modelDisplayNames override the catalog label without the provider prefix", () => {
+  const config = createConfig({
+    providers: [
+      {
+        modelDisplayNames: { "glm-5.3": "GLM 5.3 Custom" },
+        models: ["glm-5.3"],
+        name: "Zhipu"
+      }
+    ]
+  });
+  const route = buildClaudeAppGatewayModelRoutes(config).find((item) => item.targetModel === "Zhipu/glm-5.3");
+  assert.ok(route);
+  assert.equal(route.displayName, "GLM 5.3 Custom");
 });

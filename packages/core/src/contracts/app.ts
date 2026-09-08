@@ -1811,6 +1811,7 @@ export type AppConfig = {
   autoStart: boolean;
   botConfigs: BotGatewaySavedConfig[];
   botGateway: BotGatewayRuntimeConfig;
+  claudeAppDesktop?: ClaudeAppDesktopConfig;
   contextArchive: ContextArchiveConfig;
   gateway: GatewayRuntimeConfig;
   mediaTools: MediaToolsConfig;
@@ -1836,6 +1837,16 @@ export type AppConfig = {
 
 export type AppSaveConfigOptions = {
   applyProfile?: boolean;
+};
+
+export type ClaudeAppDesktopModelSlot = {
+  label?: string;
+  name: string;
+  supports1m?: boolean;
+};
+
+export type ClaudeAppDesktopConfig = {
+  models?: Array<ClaudeAppDesktopModelSlot | string>;
 };
 
 export type ClaudeAppGatewayApplyResult = {

@@ -812,6 +812,10 @@ function pickConfig(value: Partial<AppConfig>): LoadedAppConfig {
   if (botConfigs) {
     config.botConfigs = botConfigs;
   }
+  const claudeAppDesktop = parseClaudeAppDesktop((value as Record<string, unknown>).claudeAppDesktop);
+  if (claudeAppDesktop) {
+    config.claudeAppDesktop = claudeAppDesktop;
+  }
   const contextArchive = parseContextArchive((value as Record<string, unknown>).contextArchive ?? (value as Record<string, unknown>).context_archive);
   if (contextArchive) {
     config.contextArchive = contextArchive;
@@ -1472,6 +1476,40 @@ function parseModelDescriptions(value: unknown, models: string[]): Record<string
     });
 
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function parseClaudeAppDesktop(value: unknown): AppConfig["claudeAppDesktop"] {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const rawModels = value.models;
+  if (!Array.isArray(rawModels)) {
+    return undefined;
+  }
+  const models: NonNullable<AppConfig["claudeAppDesktop"]>["models"] = [];
+  for (const item of rawModels) {
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (name) {
+        models.push({ name });
+      }
+      continue;
+    }
+    if (!isObject(item)) {
+      continue;
+    }
+    const name = readString(item.name)?.trim();
+    if (!name) {
+      continue;
+    }
+    const label = readString(item.label)?.trim();
+    models.push({
+      name,
+      ...(label ? { label } : {}),
+      ...(item.supports1m === true ? { supports1m: true } : {})
+    });
+  }
+  return models.length > 0 ? { models } : undefined;
 }
 
 function parseModelDisplayNames(value: unknown, models: string[]): Record<string, string> | undefined {
