@@ -2304,6 +2304,21 @@ function SystemStatusBar({
   const overallTone = usageStatusTone(usageStats.totals);
   const StatusIcon = overallTone === "ok" ? Check : CircleAlert;
   const rangeLabel = formatSystemStatusRange(segments, usageRange);
+  const tally = { error: 0, idle: 0, ok: 0, warn: 0 } as Record<SystemStatusTone, number>;
+  for (const segment of segments) {
+    tally[segment.tone] += 1;
+  }
+  const worst = segments
+    .filter((segment) => segment.point.requestCount > 0)
+    .reduce<SystemStatusPoint | undefined>((current, segment) =>
+      !current || segment.point.successRate < current.point.successRate ? segment : current, undefined);
+  const summaryParts = [
+    tally.ok > 0 ? `${tally.ok} ${t("days healthy")}` : "",
+    tally.warn > 0 ? `${tally.warn} ${t("days degraded")}` : "",
+    tally.error > 0 ? `${tally.error} ${t("days failing")}` : "",
+    worst && worst.point.successRate < 0.98 ? `${t("Worst")} ${worst.dateLabel} ${formatPercent(worst.point.successRate)}` : ""
+  ].filter(Boolean);
+  const badgeVariant = overallTone === "ok" ? "success" : overallTone === "warn" ? "warning" : overallTone === "error" ? "danger" : "outline";
 
   useEffect(() => {
     if (!statusTooltip) {
@@ -2349,77 +2364,79 @@ function SystemStatusBar({
         icon={Server}
         title={t("System status")}
         tone={overallTone === "ok" ? "green" : overallTone === "warn" ? "orange" : overallTone === "error" ? "red" : "slate"}
-        trailing={<span className="overview-date-pill block max-w-[320px] truncate">{rangeLabel}</span>}
+        trailing={
+          <span className="flex items-center gap-2">
+            <Badge variant={badgeVariant}>
+              <StatusIcon className="h-3 w-3" />
+              {formatPercent(availability)} {" "}
+              {t("Success rate")}
+            </Badge>
+            <span className="overview-date-pill block max-w-[220px] truncate">{rangeLabel}</span>
+          </span>
+        }
       />
       <CardContent className="min-h-0 flex-1 overflow-hidden p-3">
-        <div className="space-y-2.5">
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="overview-status-icon flex h-4 w-4 shrink-0 items-center justify-center rounded-full" data-tone={overallTone}>
-                <StatusIcon className="h-3 w-3" />
-              </span>
-              <span className="min-w-0 truncate text-[13px] font-semibold">{t("API Service")}</span>
-            </div>
-            <Badge variant={overallTone === "ok" ? "success" : overallTone === "warn" ? "warning" : overallTone === "error" ? "danger" : "outline"}>
-              {formatPercent(availability)} {t("Availability")}
-            </Badge>
-          </div>
-
-          <div className="flex min-w-0 gap-1" aria-label={t("System status")}>
-            {segments.map((segment, index) => (
+        <div className="flex min-w-0 gap-1" aria-label={t("System status")}>
+          {segments.map((segment, index) => (
+            <span
+              aria-label={systemStatusPointTooltip(segment, t)}
+              className="relative flex h-3 min-w-[3px] flex-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              key={`${segment.point.bucket}-${index}`}
+              onBlur={() => setStatusTooltip(undefined)}
+              onFocus={(event) => showStatusTooltip(segment, event.currentTarget)}
+              onMouseEnter={(event) => showStatusTooltip(segment, event.currentTarget)}
+              onMouseLeave={() => setStatusTooltip(undefined)}
+              tabIndex={0}
+            >
               <span
                 aria-label={systemStatusPointTooltip(segment, t)}
-                className="relative flex h-5 min-w-[3px] flex-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-                key={`${segment.point.bucket}-${index}`}
-                onBlur={() => setStatusTooltip(undefined)}
-                onFocus={(event) => showStatusTooltip(segment, event.currentTarget)}
-                onMouseEnter={(event) => showStatusTooltip(segment, event.currentTarget)}
-                onMouseLeave={() => setStatusTooltip(undefined)}
-                tabIndex={0}
-              >
-                <span
-                  aria-label={systemStatusPointTooltip(segment, t)}
-                  className="overview-status-segment h-full w-full rounded-[4px]"
-                  data-tone={segment.tone}
-                />
+                className="overview-status-segment h-full w-full rounded-[3px]"
+                data-tone={segment.tone}
+              />
+            </span>
+          ))}
+          {statusTooltip ? (
+            <TooltipPortal
+              className="w-[190px] max-w-[calc(100vw-24px)] px-3 py-2 text-left font-normal leading-4"
+              style={{ left: statusTooltip.left, top: statusTooltip.top }}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "absolute h-2 w-2 -translate-x-1/2 rotate-45 bg-popover",
+                  statusTooltip.placement === "above"
+                    ? "-bottom-1 border-b border-r border-border/70"
+                    : "-top-1 border-l border-t border-border/70"
+                )}
+                style={{ left: statusTooltip.arrowLeft }}
+              />
+              <span className="block font-semibold">{statusTooltip.segment.dateLabel}</span>
+              <span className="mt-1 flex justify-between gap-3">
+                <span className="text-muted-foreground">{t("Requests")}</span>
+                <span className="font-medium">{formatCompactNumber(statusTooltip.segment.point.requestCount)}</span>
               </span>
-            ))}
-            {statusTooltip ? (
-              <TooltipPortal
-                className="w-[190px] max-w-[calc(100vw-24px)] px-3 py-2 text-left font-normal leading-4"
-                style={{ left: statusTooltip.left, top: statusTooltip.top }}
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "absolute h-2 w-2 -translate-x-1/2 rotate-45 bg-popover",
-                    statusTooltip.placement === "above"
-                      ? "-bottom-1 border-b border-r border-border/70"
-                      : "-top-1 border-l border-t border-border/70"
-                  )}
-                  style={{ left: statusTooltip.arrowLeft }}
-                />
-                <span className="block font-semibold">{statusTooltip.segment.dateLabel}</span>
-                <span className="mt-1 flex justify-between gap-3">
-                  <span className="text-muted-foreground">{t("Requests")}</span>
-                  <span className="font-medium">{formatCompactNumber(statusTooltip.segment.point.requestCount)}</span>
-                </span>
-                <span className="flex justify-between gap-3">
-                  <span className="text-muted-foreground">{t("Success rate")}</span>
-                  <span className="font-medium">{formatPercent(statusTooltip.segment.point.successRate)}</span>
-                </span>
-                <span className="flex justify-between gap-3">
-                  <span className="text-muted-foreground">{t("Failed requests")}</span>
-                  <span className="font-medium">{formatCompactNumber(statusTooltip.segment.point.errorCount)}</span>
-                </span>
-                <span className="flex justify-between gap-3">
-                  <span className="text-muted-foreground">{t("Duration")}</span>
-                  <span className="font-medium">{formatDuration(statusTooltip.segment.point.avgDurationMs)}</span>
-                </span>
-              </TooltipPortal>
-            ) : null}
-          </div>
+              <span className="flex justify-between gap-3">
+                <span className="text-muted-foreground">{t("Success rate")}</span>
+                <span className="font-medium">{formatPercent(statusTooltip.segment.point.successRate)}</span>
+              </span>
+              <span className="flex justify-between gap-3">
+                <span className="text-muted-foreground">{t("Failed requests")}</span>
+                <span className="font-medium">{formatCompactNumber(statusTooltip.segment.point.errorCount)}</span>
+              </span>
+              <span className="flex justify-between gap-3">
+                <span className="text-muted-foreground">{t("Duration")}</span>
+                <span className="font-medium">{formatDuration(statusTooltip.segment.point.avgDurationMs)}</span>
+              </span>
+            </TooltipPortal>
+          ) : null}
         </div>
+        <div className="mt-1.5 flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
+          <span className="truncate">{segments[0]?.dateLabel ?? ""}</span>
+          <span className="truncate">{segments.at(-1)?.dateLabel ?? ""}</span>
+        </div>
+        {summaryParts.length > 0 ? (
+          <div className="mt-2 truncate text-[11px] text-muted-foreground">{summaryParts.join(" · ")}</div>
+        ) : null}
       </CardContent>
     </Card>
   );

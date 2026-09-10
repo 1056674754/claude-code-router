@@ -274,8 +274,13 @@ export type SystemStatusPoint = {
 
 export function usageStatusTone(point: Pick<UsageTotals, "requestCount" | "successRate">): SystemStatusTone {
   if (point.requestCount <= 0) return "idle";
-  if (point.successRate >= 0.995) return "ok";
-  if (point.successRate >= 0.98) return "warn";
+  const failures = Math.round(point.requestCount * (1 - Math.min(1, Math.max(0, point.successRate))));
+  if (failures <= 0) return "ok";
+  // A couple of failed calls is a hiccup, not an outage — keep red for real
+  // damage so the strip agrees with the headline success rate.
+  if (failures < 3) return "warn";
+  if (point.successRate >= 0.98) return "ok";
+  if (point.successRate >= 0.9) return "warn";
   return "error";
 }
 
