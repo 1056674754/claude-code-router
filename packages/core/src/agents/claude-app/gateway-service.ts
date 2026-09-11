@@ -347,9 +347,20 @@ function appPath(name: "appData" | "home"): string {
 
 function backupClaudeAppGatewayConfig(paths: ClaudeAppGatewayPaths): void {
   if (existsSync(CLAUDE_APP_GATEWAY_BACKUP_FILE)) {
+    // A snapshot taken while the profile was missing (e.g. right after a
+    // poisoned restore deleted it) makes every quit delete the live profile
+    // and every start regenerate it from scratch. Refresh such a snapshot
+    // once the real file is back so the recorded original stays truthful.
+    const backup = readClaudeAppGatewayBackup();
+    if (backup && !backup.configLibraryFile.exists && existsSync(paths.configLibraryFile)) {
+      writeClaudeAppGatewayBackup(paths);
+    }
     return;
   }
+  writeClaudeAppGatewayBackup(paths);
+}
 
+function writeClaudeAppGatewayBackup(paths: ClaudeAppGatewayPaths): void {
   const backup: ClaudeAppGatewayBackup = {
     configLibraryFile: readFileSnapshot(paths.configLibraryFile),
     createdAt: new Date().toISOString(),
