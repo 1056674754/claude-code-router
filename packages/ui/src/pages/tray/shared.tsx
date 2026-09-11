@@ -553,13 +553,19 @@ export function createEmptySnapshot(range: UsageStatsRange): UsageStatsSnapshot 
 
 export function createEmptySeries(range: UsageStatsRange): UsageStatsSnapshot["series"] {
   const now = new Date();
-  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "7d" ? 7 : range === "180d" ? 180 : 30;
+  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "180d" ? 180 : range === "7d" ? 34 : 30;
   return Array.from({ length: count }, (_, index) => {
     const date = new Date(now);
     if (range === "today") {
       date.setHours(index, 0, 0, 0);
     } else if (range === "24h") {
       date.setHours(now.getHours() - (count - 1 - index), 0, 0, 0);
+    } else if (range === "7d") {
+      // Mirror the store's 5-hour buckets: floor to local day, step 5h.
+      const start = new Date(date);
+      start.setHours(0, 0, 0, 0);
+      start.setDate(start.getDate() - 6);
+      date.setTime(start.getTime() + index * 5 * 60 * 60 * 1000);
     } else {
       date.setDate(now.getDate() - (count - 1 - index));
       date.setHours(0, 0, 0, 0);
@@ -567,7 +573,11 @@ export function createEmptySeries(range: UsageStatsRange): UsageStatsSnapshot["s
     return {
       ...emptyTotals,
       bucket: date.toISOString(),
-      label: range === "today" || range === "24h" ? `${String(date.getHours()).padStart(2, "0")}:00` : `${date.getMonth() + 1}/${date.getDate()}`
+      label: range === "today" || range === "24h"
+        ? `${String(date.getHours()).padStart(2, "0")}:00`
+        : range === "7d"
+          ? `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:00`
+          : `${date.getMonth() + 1}/${date.getDate()}`
     };
   });
 }

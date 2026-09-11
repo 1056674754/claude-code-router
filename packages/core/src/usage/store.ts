@@ -777,10 +777,12 @@ function readUsageSeries(
   now: Date,
   query: UsageWhereClause
 ): UsageSeriesPoint[] {
-  const unit: "day" | "hour" = range === "today" || range === "24h" ? "hour" : "day";
+  const unit: "day" | "fiveHour" | "hour" = range === "today" || range === "24h" ? "hour" : range === "7d" ? "fiveHour" : "day";
   const bucketExpression = unit === "hour"
     ? "strftime('%Y-%m-%d %H:00', created_at, 'localtime')"
-    : "strftime('%Y-%m-%d', created_at, 'localtime')";
+    : unit === "fiveHour"
+      ? "strftime('%Y-%m-%d', created_at, 'localtime') || ' ' || printf('%02d', (CAST(strftime('%H', created_at, 'localtime') AS INTEGER) / 5) * 5) || ':00'"
+      : "strftime('%Y-%m-%d', created_at, 'localtime')";
   const rows = queryRows(
     database,
     `
@@ -955,9 +957,10 @@ function usageTotalsFromRow(row: Record<string, SqlValue> | undefined): UsageTot
 
 function buildSeries(range: UsageStatsRange, now: Date, events: StoredUsageEvent[]): UsageSeriesPoint[] {
   const buckets = buildBuckets(range, now);
+  const unit = range === "today" || range === "24h" ? "hour" : range === "7d" ? "fiveHour" : "day";
   const grouped = new Map<string, StoredUsageEvent[]>();
   for (const event of events) {
-    const key = formatBucketKey(new Date(event.createdAt), range === "today" || range === "24h" ? "hour" : "day");
+    const key = formatBucketKey(new Date(event.createdAt), unit);
     const bucket = grouped.get(key) ?? [];
     bucket.push(event);
     grouped.set(key, bucket);
@@ -990,7 +993,22 @@ function buildBuckets(
     });
   }
 
-  const count = range === "7d" ? 7 : range === "180d" ? 180 : 30;
+  if (range === "7d") {
+    // 5-hour buckets over the last 7 days: 168h / 5h = 34 windows, the last
+    // one a 3h partial. Matches the 5-hour quota round most providers use.
+    const start = floorDay(now);
+    start.setDate(start.getDate() - 6);
+    return Array.from({ length: 34 }, (_, index) => {
+      const date = new Date(start);
+      date.setHours(start.getHours() + index * 5);
+      return {
+        key: formatBucketKey(date, "fiveHour"),
+        label: `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:00`
+      };
+    });
+  }
+
+  const count = range === "180d" ? 180 : 30;
   const start = floorDay(now);
   start.setDate(start.getDate() - (count - 1));
   return Array.from({ length: count }, (_, index) => {
@@ -1365,14 +1383,15 @@ function floorDay(date: Date): Date {
   return next;
 }
 
-function formatBucketKey(date: Date, unit: "day" | "hour"): string {
+function formatBucketKey(date: Date, unit: "day" | "fiveHour" | "hour"): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   if (unit === "day") {
     return `${year}-${month}-${day}`;
   }
-  const hour = String(date.getHours()).padStart(2, "0");
+  const rawHour = unit === "fiveHour" ? Math.floor(date.getHours() / 5) * 5 : date.getHours();
+  const hour = String(rawHour).padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:00`;
 }
 

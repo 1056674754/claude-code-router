@@ -298,7 +298,7 @@ export function formatStatusBucketDate(bucket: string, range: UsageStatsRange): 
   if (!parsed) {
     return bucket;
   }
-  const dateOptions: Intl.DateTimeFormatOptions = range === "today" || range === "24h"
+  const dateOptions: Intl.DateTimeFormatOptions = range === "today" || range === "24h" || range === "7d"
     ? { day: "2-digit", hour: "2-digit", hour12: false, month: "2-digit" }
     : { day: "2-digit", month: "2-digit" };
   return new Intl.DateTimeFormat(undefined, dateOptions).format(parsed);

@@ -124,6 +124,39 @@ test("UsageStore supports the 180d range with daily buckets", async () => {
   }
 });
 
+test("UsageStore buckets the 7d range into aligned 5-hour windows", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-7d-buckets-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    const now = new Date();
+    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    for (const [createdAt, requestId] of [[now, "req-7d-now"], [threeDaysAgo, "req-7d-old"]]) {
+      await store.record({
+        createdAt: createdAt.toISOString(),
+        durationMs: 10,
+        method: "POST",
+        model: "windowed",
+        path: "/v1/messages",
+        provider: "alpha",
+        requestId,
+        statusCode: 200,
+        usage: { inputTokens: 5, outputTokens: 1 }
+      });
+    }
+
+    const stats = await store.getStats("7d", { includeProxy: true });
+    assert.equal(stats.series.length, 34);
+    for (const point of stats.series) {
+      assert.match(point.bucket, /^\d{4}-\d{2}-\d{2} (00|05|10|15|20):00$/);
+    }
+    const filled = stats.series.filter((point) => point.requestCount > 0);
+    assert.equal(filled.reduce((sum, point) => sum + point.requestCount, 0), 2);
+    assert.ok(filled.length >= 2);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("UsageStore aggregates stats in SQLite without loading all events", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
   try {
