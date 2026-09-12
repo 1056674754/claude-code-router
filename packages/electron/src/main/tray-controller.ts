@@ -200,10 +200,11 @@ class TrayController {
     this.watchPopoverFocus();
   }
 
-  // A keyless panel never emits blur again, and a blur landing inside the
-  // ignore window above is swallowed — either way dismissal is dead. Retry
-  // focus once in case it raced the window becoming visible, and close the
-  // panel if its key was gained and lost, or never arrives at all.
+  // A blur landing inside the ignore window above is swallowed, so a panel
+  // that held and lost key focus would otherwise float open forever — close
+  // it. A panel that never got focus at all (slow key acquisition, e.g. over
+  // fullscreen Spaces) stays open: it is still clickable and the tray toggle
+  // dismisses it, which beats flashing the panel away on fullscreen.
   private watchPopoverFocus(attempt = 0): void {
     setTimeout(() => {
       const popover = this.popover;
@@ -217,12 +218,11 @@ class TrayController {
         this.hidePopover();
         return;
       }
-      if (attempt < 2) {
+      if (attempt < 1) {
         popover.focus();
         this.watchPopoverFocus(attempt + 1);
         return;
       }
-      this.hidePopover();
     }, attempt === 0 ? trayBlurIgnoreMs + 200 : 320);
   }
 
