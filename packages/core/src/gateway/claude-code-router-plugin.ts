@@ -5,7 +5,7 @@ import path from "node:path";
 import { isGatewayProviderEnabled, type AppConfig, type ProfileClientKind, type ProfileConfig, type RequestRouteTraceChange, type RouterBuiltInAgentRuleId, type RouterFallbackConfig, type RouterRule, type RouterRuleCondition } from "@ccr/core/contracts/app";
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import { applyAgentRequestEnrichers } from "@ccr/core/agents/request-enricher";
-import { buildClaudeAppGatewayModelRoutes, type ClaudeAppGatewayModelRoute, resolveClaudeAppGatewayRouteModel, stripClaudeAppGatewayOneMillionContextSuffix } from "@ccr/core/agents/claude-app/gateway-routes";
+import { ANTHROPIC_CONTEXT_1M_BETA, buildClaudeAppGatewayModelRoutes, type ClaudeAppGatewayModelRoute, resolveClaudeAppGatewayRouteModel, stripClaudeAppGatewayOneMillionContextSuffix } from "@ccr/core/agents/claude-app/gateway-routes";
 import { claudeAppGatewayModelRouteOptions } from "@ccr/core/gateway/internal/shared";
 import { compileRouterConfig, type CompiledProfileRoutingConfig, type CompiledRouterConfig, type CompiledRouterRule } from "@ccr/core/routing/config-compiler";
 import type { RouteDecision, RouteDiagnostic, RouteModelRef, RouteRequest, RouteSource } from "@ccr/core/routing/contracts";
@@ -18,6 +18,7 @@ import { normalizeRouteScriptResult } from "@ccr/core/routing/route-script-resul
 import type { RouteScriptRuntime } from "@ccr/core/routing/route-script-runtime";
 import { profileApiKeyId } from "@ccr/core/profiles/api-key";
 import { isModelAllowedForProfile } from "@ccr/core/profiles/model-allowlist";
+import { mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
 
 export { normalizeRouteSelector } from "@ccr/core/routing/model-registry";
 
@@ -68,6 +69,7 @@ export class ClaudeCodeRouterPlugin {
     url: string;
   }): Promise<{ body: Record<string, unknown>; decision: ClaudeCodeRouteDecision }> {
     const body = input.bodyOwnership === "owned" ? input.body : cloneRecord(input.body);
+    normalizeRequestModelContextSuffix(body, input.headers);
     const request: MutableRequestLike = {
       body,
       headers: input.headers,
@@ -1484,6 +1486,22 @@ function readRequestHeader(headers: Record<string, HeaderValue>, name: string): 
   }
   const matchedKey = Object.keys(headers).find((key) => key.toLowerCase() === normalized);
   return matchedKey ? readHeader(headers[matchedKey]) : undefined;
+}
+
+function normalizeRequestModelContextSuffix(body: Record<string, unknown>, headers: Record<string, HeaderValue>): void {
+  const requestedModel = readString(body.model);
+  if (!requestedModel) {
+    return;
+  }
+  const strippedModel = stripClaudeAppGatewayOneMillionContextSuffix(requestedModel);
+  if (strippedModel === requestedModel || !strippedModel) {
+    return;
+  }
+  body.model = strippedModel;
+  headers["anthropic-beta"] = mergeAnthropicBetaValues(
+    readRequestHeader(headers, "anthropic-beta"),
+    ANTHROPIC_CONTEXT_1M_BETA
+  );
 }
 
 function readPathValue(value: unknown, path: string[]): unknown {

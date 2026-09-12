@@ -5,6 +5,7 @@ import { modelRegistryForConfig } from "@ccr/core/routing/model-registry";
 import { resolveUsageModelAttribution } from "@ccr/core/usage/model-attribution";
 
 export const CLAUDE_APP_ONE_MILLION_CONTEXT_SUFFIX = "[1m]";
+export const ANTHROPIC_CONTEXT_1M_BETA = "context-1m-2025-08-07";
 const CLAUDE_APP_ENCODED_ROUTE_PREFIX = "anthropic/claude-ccr-h";
 
 export type ClaudeAppGatewayModelRoute = {
