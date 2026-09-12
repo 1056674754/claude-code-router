@@ -204,4 +204,3 @@ test("Claude App gateway apply writes only the declared claudeAppDesktop slots",
     rmSync(activeDataDir, { force: true, recursive: true });
   }
 });
->>>>>>> fix/v3.0.22-cowork-egress
