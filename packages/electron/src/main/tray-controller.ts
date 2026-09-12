@@ -16,6 +16,7 @@ const popoverDetailTopOffset = 0;
 const popoverDetailWidth = 420;
 const popoverMargin = 8;
 const trayActivationSuppressMs = 750;
+const trayBlurIgnoreMs = 120;
 const trayMenuBarIconSize = 20;
 const trayWindowDarkBackgroundColor = "#1c1c1e";
 const trayWindowLightBackgroundColor = "#f2f2f7";
@@ -37,6 +38,7 @@ class TrayController {
   private detailPopover?: BrowserWindow;
   private ignorePopoverBlurUntil = 0;
   private popover?: BrowserWindow;
+  private popoverFocusSeen = false;
   private randomTrayIconDateKey?: string;
   private resolvedRandomTrayIcon?: TrayMascotIconId;
   private refreshTimer?: NodeJS.Timeout;
@@ -58,10 +60,6 @@ class TrayController {
     this.tray.on("click", () => {
       this.suppressMainWindowActivation();
       this.togglePopover();
-    });
-    this.tray.on("double-click", () => {
-      this.suppressMainWindowActivation();
-      this.showMainWindow();
     });
     this.tray.on("right-click", () => {
       this.suppressMainWindowActivation();
@@ -183,13 +181,49 @@ class TrayController {
     this.clearDetailCloseTimer();
     this.detailOpen = false;
     this.hideDetailPopover();
-    const { menu } = resolvePopoverLayout(this.tray?.getBounds(), false);
+    const trayBounds = this.tray?.getBounds();
+    // Windows taskbar overflow reports a zero rect; anchor to the cursor instead.
+    const anchorBounds = trayBounds && trayBounds.width > 0 && trayBounds.height > 0 ? trayBounds : undefined;
+    const { menu } = resolvePopoverLayout(anchorBounds, false);
 
     popover.setBounds(menu, false);
-    this.ignorePopoverBlurUntil = Date.now() + 120;
-    popover.show();
-    popover.focus();
+    this.ignorePopoverBlurUntil = Date.now() + trayBlurIgnoreMs;
+    this.popoverFocusSeen = false;
+    // Re-register the panel with the window server before ordering it front.
+    // After being hidden on another Space (especially a fullscreen one), macOS
+    // keeps the panel parked there and a plain makeKeyAndOrderFront would drag
+    // that old Space forward instead of showing the panel on the active one.
+    popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    popover.showInactive();
     popover.moveTop();
+    popover.focus();
+    this.watchPopoverFocus();
+  }
+
+  // A keyless panel never emits blur again, and a blur landing inside the
+  // ignore window above is swallowed — either way dismissal is dead. Retry
+  // focus once in case it raced the window becoming visible, and close the
+  // panel if its key was gained and lost, or never arrives at all.
+  private watchPopoverFocus(attempt = 0): void {
+    setTimeout(() => {
+      const popover = this.popover;
+      if (!popover || popover.isDestroyed() || !popover.isVisible()) {
+        return;
+      }
+      if (popover.isFocused()) {
+        return;
+      }
+      if (this.popoverFocusSeen) {
+        this.hidePopover();
+        return;
+      }
+      if (attempt < 2) {
+        popover.focus();
+        this.watchPopoverFocus(attempt + 1);
+        return;
+      }
+      this.hidePopover();
+    }, attempt === 0 ? trayBlurIgnoreMs + 200 : 320);
   }
 
   private ensurePopover(): BrowserWindow {
@@ -212,6 +246,9 @@ class TrayController {
       show: false,
       skipTaskbar: true,
       title: `${APP_NAME} Usage`,
+      // Non-activating panel: takes key focus Spotlight-style without activating
+      // the app, so opening it over a fullscreen app does not switch Spaces.
+      type: process.platform === "darwin" ? "panel" : undefined,
       ...trayWindowMaterialOptions(),
       webPreferences: {
         contextIsolation: true,
@@ -226,8 +263,13 @@ class TrayController {
 
     reinforceTrayWindowMaterial(this.popover);
     prepareTrayWindowForSharpRendering(this.popover);
-    this.popover.setAlwaysOnTop(true, "pop-up-menu");
+    // "floating" keeps the popover above regular windows but below screenshot
+    // and screen-capture annotation overlays; "pop-up-menu" renders above them.
+    this.popover.setAlwaysOnTop(true, "floating");
     this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    this.popover.on("focus", () => {
+      this.popoverFocusSeen = true;
+    });
     this.popover.on("blur", () => this.handlePopoverBlur());
     this.popover.on("closed", () => {
       this.popover = undefined;
@@ -417,12 +459,14 @@ function resolvePopoverLayout(
     : screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(anchor);
   const workArea = display.workArea;
-  const availableWidth = Math.max(360, workArea.width - popoverMargin * 2);
+  const availableWidth = Math.max(1, workArea.width - popoverMargin * 2);
   const menuWidth = Math.min(popoverMenuWidth, availableWidth);
   const preferredGroupWidth = detailOpen ? menuWidth + popoverDetailGap + popoverDetailWidth : menuWidth;
   const groupWidth = Math.min(preferredGroupWidth, availableWidth);
   const detailWidth = detailOpen ? Math.max(0, groupWidth - menuWidth - popoverDetailGap) : 0;
-  const height = Math.min(popoverPreferredHeight, Math.max(460, workArea.height - popoverMargin * 2));
+  // Shrink to fit instead of flooring above the available space, so the
+  // non-resizable popover cannot overflow tiny work areas off-screen.
+  const height = Math.min(popoverPreferredHeight, Math.max(1, workArea.height - popoverMargin * 2));
   const menuX = Math.round(anchor.x - menuWidth / 2);
   const x = clamp(menuX, workArea.x + popoverMargin, workArea.x + workArea.width - groupWidth - popoverMargin);
   const y = resolvePopoverY(trayBounds, workArea, height);

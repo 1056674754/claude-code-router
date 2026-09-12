@@ -3069,3 +3069,42 @@ test("built-in Claude Code subagent route ignores tags outside the first two mes
   assert.match(result.body.messages[2].content, /Provider\/claude-opus/);
   assert.equal(result.decision.reason, "builtin:claude-code");
 });
+
+test("request model [1m] suffix is stripped and carried as the context-1m beta header", async () => {
+  const plugin = createRouterPlugin({ profileModel: "Provider/claude-sonnet" });
+  const headers = {
+    "anthropic-beta": "existing-beta",
+    "user-agent": "claude-code/1.0"
+  };
+  const result = await plugin.routeRequest({
+    body: {
+      messages: [],
+      model: "claude-default[1m]"
+    },
+    headers,
+    method: "POST",
+    url: "/v1/messages"
+  });
+
+  assert.notEqual(result.body.model, "claude-default[1m]");
+  assert.equal(headers["anthropic-beta"], "existing-beta,context-1m-2025-08-07");
+});
+
+test("request model without suffix leaves the anthropic-beta header untouched", async () => {
+  const plugin = createRouterPlugin({ profileModel: "Provider/claude-sonnet" });
+  const headers = {
+    "anthropic-beta": "existing-beta",
+    "user-agent": "claude-code/1.0"
+  };
+  await plugin.routeRequest({
+    body: {
+      messages: [],
+      model: "claude-default"
+    },
+    headers,
+    method: "POST",
+    url: "/v1/messages"
+  });
+
+  assert.equal(headers["anthropic-beta"], "existing-beta");
+});

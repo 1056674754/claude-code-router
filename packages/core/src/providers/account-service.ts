@@ -455,7 +455,12 @@ function providerAccountTargets(provider: GatewayProviderConfig): ProviderAccoun
   const providerAccount = effectiveProviderAccount(provider);
   const credentials = activeProviderCredentials(provider);
   if (credentials.length === 0) {
-    return providerAccount ? [{ account: providerAccount, provider }] : [];
+    // Inherited preset accounts poll with the provider API key, so skip
+    // keyless providers instead of issuing unauthenticated balance requests.
+    if (!providerAccount || (provider.account === undefined && !providerApiKey(provider))) {
+      return [];
+    }
+    return [{ account: providerAccount, provider }];
   }
 
   const credentialTargets = credentials
@@ -567,22 +572,42 @@ function effectiveProviderAccountConfig(
   provider: GatewayProviderConfig,
   account: ProviderAccountConfig | undefined
 ): ProviderAccountConfig | undefined {
-  if (!account?.enabled) {
+  if (account && !account.enabled) {
     return undefined;
   }
 
-  if (!providerAccountConnectorsAreDefaultStandard(account.connectors ?? [])) {
-    return account;
+  if (account) {
+    if (!providerAccountConnectorsAreDefaultStandard(account.connectors ?? [])) {
+      return account;
+    }
+
+    const presetAccount = findProviderPresetByBaseUrl(providerBaseUrl(provider))?.account;
+    if (!presetAccount?.enabled) {
+      return undefined;
+    }
+    return {
+      ...presetAccount,
+      refreshIntervalMs: account.refreshIntervalMs ?? presetAccount.refreshIntervalMs
+    };
   }
 
+  return inheritedPresetAccountConfig(provider);
+}
+
+function inheritedPresetAccountConfig(provider: GatewayProviderConfig): ProviderAccountConfig | undefined {
   const presetAccount = findProviderPresetByBaseUrl(providerBaseUrl(provider))?.account;
-  if (!presetAccount?.enabled) {
-    return undefined;
-  }
-  return {
-    ...presetAccount,
-    refreshIntervalMs: account.refreshIntervalMs ?? presetAccount.refreshIntervalMs
-  };
+  return presetAccount?.enabled ? { ...presetAccount } : undefined;
+}
+
+export function effectiveProviderAccountConfigForTest(
+  provider: Pick<GatewayProviderConfig, "api_base_url" | "apiKey" | "apikey" | "api_key" | "baseUrl" | "baseurl">,
+  account: ProviderAccountConfig | undefined
+): ProviderAccountConfig | undefined {
+  return effectiveProviderAccountConfig(provider as GatewayProviderConfig, account);
+}
+
+export function providerAccountTargetsForTest(provider: GatewayProviderConfig): ProviderAccountTarget[] {
+  return providerAccountTargets(provider);
 }
 
 function activeProviderCredentials(provider: GatewayProviderConfig): ProviderCredentialConfig[] {

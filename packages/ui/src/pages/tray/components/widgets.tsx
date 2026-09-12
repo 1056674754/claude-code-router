@@ -144,16 +144,25 @@ export function AnimatedUsageChart({
 }
 
 export function TokenActivityPanel({
+  activitySeries,
   generatedAt,
   range,
   series
 }: {
+  activitySeries?: UsageStatsSnapshot["series"];
   generatedAt?: string;
   range?: UsageStatsRange;
   series: UsageStatsSnapshot["series"];
 }) {
   const t = useTrayText();
-  const activity = buildTokenActivity(series, { maxWeeks: 30, minWeeks: 30, now: generatedAt, range });
+  // A dedicated long-window activitySeries tracks real history independently
+  // of the selected range; otherwise the calendar follows the range window.
+  const activity = buildTokenActivity(
+    activitySeries && activitySeries.length > 0 ? activitySeries : series,
+    activitySeries && activitySeries.length > 0
+      ? { minWeeks: 24, maxWeeks: 24 }
+      : { maxWeeks: 30, minWeeks: 30, now: generatedAt, range }
+  );
 
   return (
     <div className="tray-panel min-w-0 p-2.5">
@@ -215,29 +224,34 @@ function TokenActivityGrid({
   const t = useTrayText();
   const dayLabels = [t("M"), "", t("W"), "", t("F"), "", ""];
   const cellGap = 3;
+  const maxCellPitch = 24;
   const labelColumnWidth = 14;
   const gridTemplateColumns = `${labelColumnWidth}px repeat(${activity.weekCount}, minmax(0, 1fr))`;
 
   return (
     <div className="min-w-0 overflow-visible">
-      <div className="w-full">
+      <div style={{ maxWidth: `${labelColumnWidth + activity.weekCount * maxCellPitch}px` }}>
         <div
           className="mb-1 grid text-[8px] font-medium text-slate-500"
           style={{
             columnGap: `${cellGap}px`,
-            gridTemplateColumns
+            gridTemplateColumns: `repeat(${activity.weekCount}, minmax(0, 1fr))`,
+            marginLeft: `${labelColumnWidth + cellGap}px`
           }}
         >
-          <span aria-hidden="true" />
-          {activity.months.map((month) => (
-            <span
-              className="truncate"
-              key={`${month.label}-${month.weekIndex}`}
-              style={{ gridColumn: `${month.weekIndex + 2} / span ${Math.min(3, activity.weekCount - month.weekIndex)}` }}
-            >
-              {month.label}
-            </span>
-          ))}
+          {activity.months.map((month, index) => {
+            const nextWeek = activity.months[index + 1]?.weekIndex ?? activity.weekCount;
+            const span = Math.max(1, Math.min(3, nextWeek - month.weekIndex, activity.weekCount - month.weekIndex));
+            return (
+              <span
+                className="truncate"
+                key={`${month.label}-${month.weekIndex}`}
+                style={{ gridColumn: `${month.weekIndex + 1} / span ${span}` }}
+              >
+                {month.label}
+              </span>
+            );
+          })}
         </div>
         <div
           className="grid"
@@ -273,7 +287,7 @@ function TokenActivityGrid({
               key={cell.dateKey}
               side={cell.dayIndex <= 1 ? "bottom" : "top"}
               style={{
-                backgroundColor: trayActivityColor(cell.intensity, cell.inObservedRange),
+                backgroundColor: trayActivityColor(cell.intensity, cell.inObservedRange, cell.date > new Date()),
                 gridColumn: cell.weekIndex + 2,
                 gridRow: cell.dayIndex + 1
               }}
@@ -289,12 +303,16 @@ function formatActivityTokenCount(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(Math.round(Math.max(0, value)));
 }
 
-function trayActivityColor(intensity: TokenActivityCell["intensity"], inRange: boolean): string {
-  if (!inRange) return "rgba(10,132,255,.045)";
-  if (intensity === 0) return "rgba(10,132,255,.12)";
-  if (intensity === 1) return "rgba(10,132,255,.3)";
-  if (intensity === 2) return "rgba(10,132,255,.5)";
-  if (intensity === 3) return "rgba(10,132,255,.72)";
+function trayActivityColor(
+  intensity: TokenActivityCell["intensity"],
+  inRange: boolean,
+  isFuture = false
+): string {
+  if (!inRange) return isFuture ? "rgba(10,132,255,.04)" : "rgba(10,132,255,.09)";
+  if (intensity === 0) return "rgba(10,132,255,.15)";
+  if (intensity === 1) return "rgba(10,132,255,.32)";
+  if (intensity === 2) return "rgba(10,132,255,.52)";
+  if (intensity === 3) return "rgba(10,132,255,.74)";
   return "rgba(10,132,255,.96)";
 }
 

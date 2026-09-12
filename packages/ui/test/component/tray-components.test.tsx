@@ -162,8 +162,28 @@ test("Tray source tabs resolve configured, preset, local, and fallback provider 
   assert.equal(tabByProvider.get("unknown")?.iconUrl, undefined);
 });
 
-test("AccountSummaryPanel covers empty and metered account states", () => {
+test("AccountSummaryPanel covers empty, unsupported, and metered account states", () => {
   const emptyHtml = renderToStaticMarkup(<AccountSummaryPanel snapshots={[]} variant="bar" />);
+  const unsupportedHtml = renderToStaticMarkup(
+    <AccountSummaryPanel
+      snapshots={[
+        {
+          errors: [
+            {
+              message: "No supported account usage endpoint is available for this provider.",
+              source: "unsupported"
+            }
+          ],
+          meters: [],
+          provider: "Vendor",
+          source: "unsupported",
+          status: "unsupported",
+          updatedAt: new Date().toISOString()
+        }
+      ]}
+      variant="bar"
+    />
+  );
   const meteredHtml = renderToStaticMarkup(
     <AccountSummaryPanel snapshots={accountSnapshots()} variant="stacked" onRefresh={() => undefined} />
   );
@@ -171,7 +191,8 @@ test("AccountSummaryPanel covers empty and metered account states", () => {
     <AccountSummaryPanel accountProviders={["anthropic::secondary"]} snapshots={accountSnapshots()} variant="compact" />
   );
 
-  assert.match(emptyHtml, /No account data configured/);
+  assert.equal(emptyHtml, "");
+  assert.match(unsupportedHtml, /No supported account usage endpoint/);
   assert.match(meteredHtml, /openai \/ Primary Key/);
   assert.match(meteredHtml, /anthropic \/ Secondary Key/);
   assert.match(meteredHtml, /5h quota/);

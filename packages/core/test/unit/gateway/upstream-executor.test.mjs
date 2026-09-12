@@ -571,3 +571,284 @@ test("model-chain fallback rebuilds every protocol attempt from the canonical re
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rate-limit hold keeps the client request alive and retries until upstream recovers", async () => {
+  const originalFetch = globalThis.fetch;
+  const statuses = [429, 429, 200];
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    const status = statuses[Math.min(fetchCount, statuses.length - 1)];
+    fetchCount += 1;
+    return new Response(null, {
+      headers: { "content-type": "application/json", "retry-after": "1" },
+      status
+    });
+  };
+  try {
+    const outcome = await fetchUpstreamWithFallback({
+      body: Buffer.from('{"model":"test-model"}'),
+      config: { Providers: [], Router: { fallback: { mode: "retry", models: [], rateLimitWaitMs: 4000, retryCount: 0 }, rules: [] }, virtualModelProfiles: [] },
+      coreAuthToken: "core-token",
+      fallback: { mode: "retry", models: [], rateLimitWaitMs: 4000, retryCount: 0 },
+      headers: {},
+      method: "POST",
+      path: "/v1/messages",
+      routedModel: "test-model",
+      upstreamUrl: "http://127.0.0.1:3456/v1/messages"
+    });
+
+    assert.equal(outcome.response.status, 200);
+    assert.equal(fetchCount, 3);
+    assert.equal(outcome.failedAttempts.length, 2);
+    assert.ok(outcome.failedAttempts.every((failed) => failed.statusCode === 429));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rate-limit hold surfaces the 429 once the wait budget is exhausted", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(null, { headers: { "content-type": "application/json" }, status: 429 });
+  };
+  try {
+    const outcome = await fetchUpstreamWithFallback({
+      body: Buffer.from('{"model":"test-model"}'),
+      config: { Providers: [], Router: { fallback: { mode: "retry", models: [], rateLimitWaitMs: 60, retryCount: 0 }, rules: [] }, virtualModelProfiles: [] },
+      coreAuthToken: "core-token",
+      fallback: { mode: "retry", models: [], rateLimitWaitMs: 60, retryCount: 0 },
+      headers: {},
+      method: "POST",
+      path: "/v1/messages",
+      routedModel: "test-model",
+      upstreamUrl: "http://127.0.0.1:3456/v1/messages"
+    });
+
+    assert.equal(outcome.response.status, 429);
+    assert.equal(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("openai_chat targets receive anthropic image blocks as data-url image_url parts", () => {
+  const config = {
+    Providers: [
+      {
+        capabilities: [{ baseUrl: "https://ai.ctaigw.example/v1", type: "openai_chat_completions" }],
+        credentials: [{ apiKey: "ctyun-key", id: "ctyun-main" }],
+        id: "ctyun",
+        models: ["glm-4.6v"],
+        name: "Ctyun"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] },
+    profile: {
+      enabled: true,
+      profiles: [
+        {
+          agent: "claude-code",
+          enabled: true,
+          id: "claude-code-ctyun",
+          model: "Ctyun/glm-4.6v",
+          name: "Claude Code Ctyun",
+          scope: "global"
+        }
+      ]
+    },
+    virtualModelProfiles: []
+  };
+  const route = buildClaudeAppGatewayModelRoutes(config).find((item) => item.targetModel === "Ctyun/glm-4.6v");
+  assert.ok(route);
+
+  const rewrite = prepareClaudeAppDiscoveredModelRequest(
+    config,
+    "POST",
+    "/v1/messages",
+    Buffer.from(JSON.stringify({
+      max_tokens: 16,
+      messages: [
+        {
+          content: [
+            { text: "What color?", type: "text" },
+            { source: { data: "aGVsbG8=", media_type: "image/png", type: "base64" }, type: "image" },
+            { source: { type: "url", url: "https://example.com/cat.png" }, type: "image" }
+          ],
+          role: "user"
+        }
+      ],
+      model: route.id
+    }))
+  );
+  assert.ok(rewrite);
+  assert.equal(rewrite.routedModel, "Ctyun/glm-4.6v");
+
+  const attempt = prepareGatewayUpstreamAttemptForTest({
+    body: JSON.parse(rewrite.body.toString("utf8")),
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: rewrite.routedModel
+  });
+
+  assert.equal(attempt.credentialProtocol, "openai_chat_completions");
+  const content = attempt.body?.messages?.[0]?.content;
+  assert.equal(content?.[0]?.type, "text");
+  assert.deepEqual(content?.[1], { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } });
+  assert.deepEqual(content?.[2], { type: "image_url", image_url: { url: "https://example.com/cat.png" } });
+});
+
+test("tool blocks are flattened for openai_chat targets and tool_result images survive", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body: {
+      messages: [
+        {
+          content: [
+            { input: { path: "/tmp/a.png" }, id: "call_01", name: "screenshot", type: "tool_use" }
+          ],
+          role: "assistant"
+        },
+        {
+          content: [
+            {
+              content: [
+                { source: { data: "QUJD", media_type: "image/jpeg", type: "base64" }, type: "image" }
+              ],
+              tool_use_id: "call_01",
+              type: "tool_result"
+            }
+          ],
+          role: "user"
+        },
+        {
+          content: "continue",
+          role: "user",
+          type: "text"
+        }
+      ],
+      model: "Ctyun/deepseek-v4.1-flash",
+      max_tokens: 8
+    },
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages[0]?.role, "assistant");
+  assert.equal(messages[0]?.content?.[0]?.type, "text");
+  assert.match(messages[0]?.content?.[0]?.text, /\[tool call: screenshot\(/);
+  assert.equal(messages[1]?.role, "user");
+  const parts = messages[1]?.content ?? [];
+  assert.equal(parts[0]?.type, "text");
+  assert.match(parts[0]?.text, /\[tool result for call_01\]/);
+  assert.equal(parts[1]?.type, "image_url");
+  assert.equal(parts[1]?.image_url?.url, "data:image/jpeg;base64,QUJD");
+  assert.equal(messages[2]?.role, "user");
+  assert.equal(messages[2]?.content, "continue");
+});
+
+test("string tool_result content survives the openai_chat flatten", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body: {
+      messages: [
+        {
+          content: "先跑一下测试",
+          role: "assistant"
+        },
+        {
+          content: [
+            {
+              content: "PASS 12 FAIL 0",
+              tool_use_id: "call_str",
+              type: "tool_result"
+            }
+          ],
+          role: "user"
+        },
+        {
+          content: "测试结果如何？",
+          role: "user"
+        }
+      ],
+      model: "Ctyun/deepseek-v4.1-flash",
+      max_tokens: 8
+    },
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages.length, 3);
+  assert.match(messages[1]?.content?.[0]?.text, /\[tool result for call_str\] PASS 12 FAIL 0/);
+});
+
+test("openai_chat bodies without tool or image blocks are returned unchanged", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+  const body = {
+    messages: [
+      { content: "just text", role: "user" }
+    ],
+    model: "Ctyun/deepseek-v4.1-flash",
+    max_tokens: 8
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body,
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  assert.deepEqual(result.body?.messages, body.messages);
+});

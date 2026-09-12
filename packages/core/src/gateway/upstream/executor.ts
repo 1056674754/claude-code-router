@@ -11,6 +11,7 @@ import { requestProtocolForPath } from "@ccr/core/routing/protocol-endpoints";
 import { resolveConfiguredProviderModelSelector, resolveUniqueConfiguredProviderModelSelector } from "@ccr/core/routing/model-resolution";
 import { estimateLimitUsage } from "@ccr/core/gateway/limits/window-limiter";
 import { providerCredentialLimitState, readProviderCredentialCooldown, recordProviderCredentialOutcome } from "@ccr/core/providers/credential-pool";
+import { clampNumber } from "@ccr/core/gateway/internal/collections";
 import { isRecord, stringValue } from "@ccr/core/gateway/internal/value";
 import { isLocalClaudeCodeOauthProviderPlugin, mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
 import { abortSignalMessage, formatError, omitLocalObservabilityHeaders, shouldSendBody, withCoreGatewayAuthHeader } from "@ccr/core/gateway/http/io";
@@ -18,7 +19,8 @@ import { parseJsonObjectSafe, releaseJsonObject, serializeJsonBody, serializeJso
 import { resolveGatewayPublicModelId } from "@ccr/core/gateway/features/model-discovery";
 import { activeProviderCredentials, findProviderByPublicOrInternalName, findProviderCredentialBySlug, normalizedProviderCapabilities, parseProviderCredentialInternalName, providerCapabilityForClientProtocol, providerCapabilityInternalName, providerCapabilityNameMatches, providerCredentialInternalName, providerCredentialPriority, providerCredentialRuntimeId, providerCredentialSlug, providerProtocolForClientProtocol, sanitizeHeaderValue } from "@ccr/core/providers/runtime-topology";
 import { delay } from "@ccr/core/gateway/internal/clock";
-import { retryDelayAfterNetworkError, retryDelayAfterStatus, shouldFallbackAfterStatus } from "@ccr/core/gateway/upstream/retry-policy";
+import { rateLimitRetryWaitMs, retryDelayAfterNetworkError, retryDelayAfterStatus, shouldFallbackAfterStatus } from "@ccr/core/gateway/upstream/retry-policy";
+import { ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS, ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS } from "@ccr/core/contracts/app";
 import { claudeCodeOauthBetaHeader, claudeCodeOauthRequiredBeta, UpstreamRequestError } from "@ccr/core/gateway/internal/shared";
 import type { ApiKeyLimitUsage, ProviderCredentialRoutingTarget, UpstreamAttempt, UpstreamFailedAttempt, UpstreamFetchResult } from "@ccr/core/gateway/internal/shared";
 import type { RouteTraceObserver } from "@ccr/core/observability/route-trace";
@@ -311,6 +313,8 @@ export async function fetchUpstreamWithFallback(input: {
     planningRouting.routedModel
   );
   const failedAttempts: UpstreamFailedAttempt[] = [];
+  let rateLimitHoldStartedAtMs = 0;
+  let rateLimitRetryCount = 0;
   const attemptRoutingCache = new Map<string | undefined, {
     body?: Buffer;
     headers: Record<string, string>;
@@ -509,6 +513,59 @@ export async function fetchUpstreamWithFallback(input: {
           await delay(delayMs, input.signal);
         }
         continue;
+      }
+
+      // Rate-limit hold: once the plan's attempts are exhausted, keep the
+      // client request alive and re-attempt the same target until the
+      // rate-limit wait budget runs out, instead of surfacing the 429.
+      if (response.status === 429) {
+        const waitBudgetMs = clampNumber(
+          input.fallback.rateLimitWaitMs ?? ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS,
+          0,
+          ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS
+        );
+        if (waitBudgetMs > 0 && !input.signal?.aborted) {
+          if (rateLimitHoldStartedAtMs === 0) {
+            rateLimitHoldStartedAtMs = Date.now();
+          }
+          const waitMs = rateLimitRetryWaitMs({
+            attemptIndex: rateLimitRetryCount,
+            elapsedMs: Date.now() - rateLimitHoldStartedAtMs,
+            retryAfterHeader: response.headers.get("retry-after"),
+            waitBudgetMs
+          });
+          if (waitMs !== undefined) {
+            rateLimitRetryCount += 1;
+            input.trace?.capture({
+              attempt: attemptNumber,
+              durationMs: Date.now() - attemptStartedAt,
+              kind: "outcome",
+              name: "upstream.attempt.outcome",
+              outcome: { fallbackReason: "rate-limit-hold", retryDelayMs: waitMs, statusCode: response.status },
+              phase: "outcome",
+              startedAtMs: attemptStartedAt,
+              status: "error",
+              target: {
+                ...(attempt.model ? { model: attempt.model } : {}),
+                ...(attemptProvider ? { provider: attemptProvider } : {})
+              }
+            });
+            failedAttempts.push({
+              credentialChain: attempt.credentialChain,
+              credentialIds: attempt.credentialIds,
+              delayMs: waitMs,
+              model: attempt.model,
+              statusCode: response.status
+            });
+            recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+            await drainResponseBody(response);
+            attempts.push({ ...plannedAttempt });
+            if (waitMs > 0) {
+              await delay(waitMs, input.signal);
+            }
+            continue;
+          }
+        }
       }
 
       input.trace?.capture({
@@ -817,8 +874,91 @@ function usageAwareOpenAiChatAttemptBody(input: {
   }
   const sanitizedBody = stripUnsupportedOpenAiRequestParameters(input.body);
   return providerProtocol === "openai_chat_completions"
-    ? usageAwareOpenAiChatBody(sanitizedBody)
+    ? usageAwareOpenAiChatBody(adaptAnthropicImageBlocksForOpenAiChat(sanitizedBody))
     : sanitizedBody;
+}
+
+// The bundled gateway runtime maps anthropic text but has no parser for
+// anthropic image blocks, so openai_chat targets silently lose images;
+// translate the image blocks to OpenAI data-url parts here. It also maps
+// anthropic tool_use/tool_result blocks incompletely (role:"tool" without a
+// preceding assistant "tool_calls" message), which strict OpenAI-compatible
+// upstreams reject — so tool blocks are flattened into plain text/image
+// content that every openai_chat target accepts.
+function adaptAnthropicImageBlocksForOpenAiChat(body: Buffer | undefined): Buffer | undefined {
+  const parsedBody = parseJsonObjectSafe(body);
+  if (!parsedBody || !Array.isArray(parsedBody.messages)) {
+    return body;
+  }
+  const flattened: unknown[] = [];
+  const pushUserContent = (parts: unknown[]) => {
+    const previous = flattened[flattened.length - 1];
+    if (isRecord(previous) && previous.role === "user" && Array.isArray(previous.content)) {
+      previous.content = [...previous.content, ...parts];
+      return;
+    }
+    flattened.push({ content: parts, role: "user" });
+  };
+  for (const message of parsedBody.messages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) {
+      flattened.push(message);
+      continue;
+    }
+    if (message.role === "user") {
+      const parts: unknown[] = [];
+      for (const block of message.content) {
+        if (isRecord(block) && block.type === "tool_result") {
+          const toolUseId = stringValue(block.tool_use_id);
+          if (typeof block.content === "string" && block.content.trim()) {
+            parts.push({ text: `[tool result for ${toolUseId ?? "tool"}] ${block.content}`, type: "text" });
+            continue;
+          }
+          parts.push({ text: toolUseId ? `[tool result for ${toolUseId}]` : "[tool result]", type: "text" });
+          parts.push(...(Array.isArray(block.content) ? block.content : []).map(openAiChatImageBlockFromAnthropic));
+          continue;
+        }
+        parts.push(openAiChatImageBlockFromAnthropic(block));
+      }
+      pushUserContent(parts);
+      continue;
+    }
+    const content: unknown[] = [];
+    let hasToolUse = false;
+    for (const block of message.content) {
+      if (isRecord(block) && block.type === "tool_use") {
+        hasToolUse = true;
+        content.push({
+          text: `[tool call: ${stringValue(block.name) ?? "tool"}(${JSON.stringify(block.input ?? {}) || "{}"})]`,
+          type: "text"
+        });
+        continue;
+      }
+      content.push(openAiChatImageBlockFromAnthropic(block));
+    }
+    flattened.push(hasToolUse ? { ...message, content } : message);
+  }
+  const unchanged = flattened.length === (parsedBody.messages as unknown[]).length &&
+    flattened.every((message, index) => message === (parsedBody.messages as unknown[])[index]);
+  if (unchanged) {
+    return body;
+  }
+  return serializeJsonBody({ ...parsedBody, messages: flattened });
+}
+
+function openAiChatImageBlockFromAnthropic(block: unknown): unknown {
+  if (!isRecord(block)) {
+    return block;
+  }
+  if (block.type !== "image" || !isRecord(block.source)) {
+    return block;
+  }
+  if (block.source.type === "base64" && typeof block.source.media_type === "string" && typeof block.source.data === "string") {
+    return { type: "image_url", image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } };
+  }
+  if (block.source.type === "url" && typeof block.source.url === "string") {
+    return { type: "image_url", image_url: { url: block.source.url } };
+  }
+  return block;
 }
 
 
@@ -1166,6 +1306,15 @@ function routeTraceChange(
 
 function isRouteTraceChange(value: RequestRouteTraceChange | undefined): value is RequestRouteTraceChange {
   return Boolean(value);
+}
+
+
+async function drainResponseBody(response: Response): Promise<void> {
+  try {
+    await response.arrayBuffer();
+  } catch {
+    // The failed attempt is already being skipped; body drain errors should not block the next attempt.
+  }
 }
 
 

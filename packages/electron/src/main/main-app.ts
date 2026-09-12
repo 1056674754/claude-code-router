@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { setupApplicationMenu } from "./app-menu";
 import { loadAppConfig } from "@ccr/core/config/config";
-import { loadOnboardingFinished } from "@ccr/core/config/onboarding-state";
 import { restoreClaudeAppGatewayConfig, syncClaudeAppGatewayConfig } from "@ccr/core/agents/claude-app/gateway-service";
 import { deepLinkService } from "./deep-link";
 import { gatewayService } from "@ccr/core/gateway/service";
@@ -15,7 +14,7 @@ import { appUpdateService } from "./update-service";
 import { browserAutomationMcpService } from "./browser-automation-mcp";
 import { browserWebSearchMcpService } from "./electron-web-search-mcp";
 import { applyNativeThemePreference } from "./native-theme";
-import windowsManager from "./windows";
+import windowsManager, { restorePersistedMainWindowBounds } from "./windows";
 import { closeRequestLogRuntime } from "@ccr/core/observability/request-log-store";
 import { stopProviderModelAutoRefreshService, syncProviderModelAutoRefreshService } from "@ccr/core/providers/model-auto-refresh";
 import type { AppConfig } from "@ccr/core/contracts/app";
@@ -49,7 +48,7 @@ function startPrimaryInstance(): void {
   void app.whenReady().then(async () => {
     const config = await loadAppConfig();
     applyNativeThemePreference(config.theme);
-    windowsManager.setOnboardingFinished(await loadOnboardingFinished());
+    await restorePersistedMainWindowBounds();
     configureProxyDesktopIntegration();
     let ccrLauncherPreparation: CcrCliLauncherPreparation | undefined;
     try {

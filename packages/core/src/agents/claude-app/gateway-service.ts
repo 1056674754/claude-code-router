@@ -7,7 +7,7 @@ import { saveAppConfig } from "@ccr/core/config/config";
 import { updatePersistedApiKeys } from "@ccr/core/config/config-repository";
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import {
-  buildClaudeAppGatewayInferenceModels,
+  buildClaudeAppDesktopInferenceModels,
   type ClaudeAppGatewayInferenceModel,
   type ClaudeAppGatewayModelRouteOptions
 } from "@ccr/core/agents/claude-app/gateway-routes";
@@ -149,7 +149,7 @@ export function applyClaudeAppGatewayConfig(config: AppConfig, options: ClaudeAp
   const paths = getClaudeAppGatewayPaths(options.dataDir);
   const activePaths = getClaudeAppActiveGatewayPaths(options.dataDir, paths);
   const endpoint = gatewayEndpoint(state.config);
-  const models = buildClaudeAppGatewayInferenceModels(state.config, {
+  const models = buildClaudeAppDesktopInferenceModels(state.config, {
     ...claudeAppGatewayModelRouteOptions,
     defaultTargetModel: options.defaultModel
   });
@@ -353,9 +353,20 @@ function appPath(name: "appData" | "home"): string {
 
 function backupClaudeAppGatewayConfig(paths: ClaudeAppGatewayPaths): void {
   if (existsSync(CLAUDE_APP_GATEWAY_BACKUP_FILE)) {
+    // A snapshot taken while the profile was missing (e.g. right after a
+    // poisoned restore deleted it) makes every quit delete the live profile
+    // and every start regenerate it from scratch. Refresh such a snapshot
+    // once the real file is back so the recorded original stays truthful.
+    const backup = readClaudeAppGatewayBackup();
+    if (backup && !backup.configLibraryFile.exists && existsSync(paths.configLibraryFile)) {
+      writeClaudeAppGatewayBackup(paths);
+    }
     return;
   }
+  writeClaudeAppGatewayBackup(paths);
+}
 
+function writeClaudeAppGatewayBackup(paths: ClaudeAppGatewayPaths): void {
   const backup: ClaudeAppGatewayBackup = {
     configLibraryFile: readFileSnapshot(paths.configLibraryFile),
     createdAt: new Date().toISOString(),

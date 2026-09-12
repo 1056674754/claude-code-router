@@ -20,6 +20,7 @@ type ProviderPluginRequestInput = {
   };
   request?: {
     id?: string;
+    body?: unknown;
     headers?: Record<string, string | string[] | undefined>;
   };
   targetProviderConfig?: {
@@ -188,13 +189,96 @@ function joinUrlPath(base: string, remainder: string): string {
   return `${base}/${normalizedRemainder}`;
 }
 
+type JsonRecordLike = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecordLike {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Collects image content from anthropic and openai block shapes (including
+ * images nested in tool_result content) as data-url / url image parts.
+ */
+function collectImageParts(value: unknown, parts: Array<{ type: "image_url"; image_url: { url: string } }>, depth = 0): void {
+  if (!isJsonRecord(value) || depth > 6) {
+    return;
+  }
+  if (value.type === "image") {
+    const source = isJsonRecord(value.source) ? value.source : undefined;
+    const url = typeof source?.url === "string" && source.url.trim()
+      ? source.url
+      : typeof source?.data === "string" && typeof source?.media_type === "string"
+        ? `data:${source.media_type};base64,${source.data}`
+        : undefined;
+    if (url) {
+      parts.push({ type: "image_url", image_url: { url } });
+    }
+    return;
+  }
+  if (value.type === "image_url") {
+    const image_url = isJsonRecord(value.image_url) ? value.image_url : undefined;
+    const url = typeof image_url?.url === "string" ? image_url.url : undefined;
+    if (url) {
+      parts.push({ type: "image_url", image_url: { url } });
+    }
+    return;
+  }
+  if (Array.isArray(value.content)) {
+    value.content.forEach((nested) => collectImageParts(nested, parts, depth + 1));
+  }
+}
+
+/**
+ * The bundled gateway translates anthropic text and tool blocks for openai
+ * targets but turns image blocks into text placeholders — strict openai
+ * upstreams then never see the image. Restore the image parts from the
+ * request the core received into the upstream body, positionally.
+ */
+function restoreUpstreamImages(request: unknown, upstreamRequest: UpstreamRequest): unknown | undefined {
+  const upstreamMessages = isJsonRecord(upstreamRequest.body) && Array.isArray(upstreamRequest.body.messages)
+    ? upstreamRequest.body.messages
+    : undefined;
+  const requestMessages = isJsonRecord(request) && Array.isArray(request.messages)
+    ? request.messages
+    : undefined;
+  if (!upstreamMessages || !requestMessages || upstreamMessages.length !== requestMessages.length) {
+    return undefined;
+  }
+  const upstreamBody = upstreamRequest.body as JsonRecordLike;
+  let changed = false;
+  const messages = upstreamMessages.map((message: unknown, index: number) => {
+    if (!isJsonRecord(message) || message.role !== "user") {
+      return message;
+    }
+    const images: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+    collectImageParts(requestMessages[index], images);
+    if (images.length === 0) {
+      return message;
+    }
+    changed = true;
+    if (typeof message.content === "string") {
+      return { ...message, content: [{ type: "text", text: message.content }, ...images] };
+    }
+    if (Array.isArray(message.content) && !message.content.some((part) => isJsonRecord(part) && part.type === "image_url")) {
+      return { ...message, content: [...message.content, ...images] };
+    }
+    return message;
+  });
+  return changed ? { ...upstreamBody, messages } : undefined;
+}
+
 export function createGatewayPlugin() {
   return {
     providerHooks: [{
       key: "ccr-upstream-header-sanitizer",
       transformRequest(input: ProviderPluginRequestInput) {
+        const restoredBody = restoreUpstreamImages(
+          isJsonRecord(input.request) ? input.request.body : undefined,
+          input.upstreamRequest
+        );
         const upstreamRequest = {
           ...input.upstreamRequest,
+          ...(restoredBody ? { body: restoredBody } : {}),
           headers: mergeUpstreamProviderHeaders(input.request?.headers, input.upstreamRequest.headers),
           url: rewriteUpstreamProviderUrl(input.upstreamRequest.url, input.targetProviderConfig, input.config)
         };

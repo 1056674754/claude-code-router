@@ -4,7 +4,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { formatCodexResetCardExpiry, formatCodexResetCardNumber, OverviewStatisticsResetDialog, OverviewView } from "@ccr/ui/pages/home/components/dashboard.tsx";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
-import { parseStatusBucketDate } from "@ccr/ui/pages/home/shared/controls.tsx";
+import { parseStatusBucketDate, usageStatusTone } from "@ccr/ui/pages/home/shared/controls.tsx";
 import { formatProviderAccountMeterValue, providerAccountMeterDetailValidityProgress } from "@ccr/ui/pages/home/shared/provider-accounts.ts";
 import type { GatewayProviderConfig, OverviewWidgetConfig, ProviderAccountSnapshot } from "@ccr/core/contracts/app.ts";
 import { accountSnapshots, installBrowserGlobals, usageStats } from "../fixtures/index.ts";
@@ -54,7 +54,7 @@ test("OverviewView renders every overview widget type", () => {
   assert.match(html, /overview-metric-card/);
   assert.doesNotMatch(html, /2026-06-20T00:00:00\.000Z/);
   assert.match(html, /System status/);
-  assert.match(html, /API Service/);
+  assert.match(html, /Success rate/);
   assert.match(html, /openai \/ Primary Key/);
   assert.match(html, /Requests/);
   assert.match(html, /Cache ratio/);
@@ -903,4 +903,16 @@ test("Codex reset cards format the credit id and expiry like card data", () => {
   assert.deepEqual(formatCodexResetCardNumber("reset-root-1"), ["rese", "t-ro", "ot-1"]);
   assert.equal(formatCodexResetCardExpiry("2026-08-02T00:00:00Z"), "08/02");
   assert.equal(formatCodexResetCardExpiry("not-a-date"), "--/--");
+});
+
+test("usageStatusTone keeps small failure counts out of red and scales with volume", () => {
+  assert.equal(usageStatusTone({ requestCount: 0, successRate: 1 }), "idle");
+  assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 1 }), "ok");
+  // One failed call out of ten is a hiccup, not an outage.
+  assert.equal(usageStatusTone({ requestCount: 10, successRate: 0.9 }), "warn");
+  assert.equal(usageStatusTone({ requestCount: 3, successRate: 0.67 }), "warn");
+  // Sustained >=98% stays healthy once failures are non-trivial.
+  assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.985 }), "ok");
+  assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.95 }), "warn");
+  assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.7 }), "error");
 });

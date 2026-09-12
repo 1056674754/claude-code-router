@@ -4,30 +4,60 @@ import { buildTokenActivity, activityDateKey } from "@ccr/ui/lib/usage-activity.
 
 test("buildTokenActivity summarizes observed token days and streaks", () => {
   withTimezone("America/New_York", () => {
-    const summary = buildTokenActivity(
-      [
-        { bucket: "2026-06-02", totalTokens: 10 },
-        { bucket: "2026-06-03", totalTokens: 30 },
-        { bucket: "2026-06-04", totalTokens: 60 },
-        { bucket: "2026-06-05", totalTokens: -20 },
-        { bucket: "not-a-date", totalTokens: 999 }
-      ],
-      { minWeeks: 2 }
-    );
+    const summary = buildTokenActivity([
+      { bucket: "2026-06-02", totalTokens: 10 },
+      { bucket: "2026-06-03", totalTokens: 30 },
+      { bucket: "2026-06-04", totalTokens: 60 },
+      { bucket: "2026-06-05", totalTokens: -20 },
+      { bucket: "not-a-date", totalTokens: 999 }
+    ]);
 
     assert.equal(summary.totalTokens, 100);
     assert.equal(summary.activeDays, 3);
     assert.equal(summary.dayCount, 4);
     assert.equal(summary.longestStreak, 3);
     assert.equal(summary.maxTokens, 60);
-    assert.equal(summary.weekCount, 2);
-    assert.equal(summary.cells.length, 14);
+    assert.equal(summary.weekCount, 1);
+    assert.equal(summary.cells.length, 7);
 
     const cellsByDate = new Map(summary.cells.map((cell) => [cell.dateKey, cell]));
+    assert.equal(cellsByDate.get("2026-06-01")?.inObservedRange, false);
+    assert.equal(cellsByDate.get("2026-06-02")?.inObservedRange, true);
     assert.equal(cellsByDate.get("2026-06-02")?.intensity, 1);
     assert.equal(cellsByDate.get("2026-06-03")?.intensity, 3);
     assert.equal(cellsByDate.get("2026-06-04")?.intensity, 4);
     assert.equal(cellsByDate.get("2026-06-05")?.intensity, 0);
+  });
+});
+
+test("buildTokenActivity clamps the grid to maxWeeks ending at the observed week", () => {
+  withTimezone("America/New_York", () => {
+    const summary = buildTokenActivity(
+      [
+        { bucket: "2026-06-02", totalTokens: 10 },
+        { bucket: "2026-06-20", totalTokens: 30 }
+      ],
+      { maxWeeks: 2 }
+    );
+
+    assert.equal(summary.weekCount, 2);
+    assert.equal(summary.cells.length, 14);
+    const keys = new Set(summary.cells.map((cell) => cell.dateKey));
+    assert.equal(keys.has("2026-06-02"), false);
+    assert.equal(keys.has("2026-06-08"), true);
+    assert.equal(keys.has("2026-06-20"), true);
+  });
+});
+
+test("buildTokenActivity pads to minWeeks when asked for a fixed calendar window", () => {
+  withTimezone("America/New_York", () => {
+    const summary = buildTokenActivity(
+      [{ bucket: "2026-06-03", totalTokens: 10 }],
+      { minWeeks: 2 }
+    );
+
+    assert.equal(summary.weekCount, 2);
+    assert.equal(summary.cells.length, 14);
   });
 });
 

@@ -4,7 +4,7 @@ import {
   Box, Braces, Button, Card, CardContent, CardHeader, CardTitle,
   Check, Checkbox, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, cn,
   compareProviderAccountSnapshots, copyTextToClipboard, createDefaultProviderAccountDraft, createModelCatalogItems, createProviderAccountDraftFromConfig, createProviderCredentialDraft,
-  customProviderPresetId, defaultProviderAccountConfigForPreset, Dialog, DialogBody, DialogContent, DialogFooter,
+  customProviderPresetId, defaultProviderAccountConfigForBaseUrl, Dialog, DialogBody, DialogContent, DialogFooter,
   DialogHeader, DialogTitle, ExternalLink, Eye, EyeOff, Field, findProviderPreset, formatProviderAccountMeterValue, GatewayProviderConfig,
   GatewayProviderProbeResult, getProviderPresets, Globe, inferProviderNameFromBaseUrl, Info, Input, KeyRound, KeyValueRowsControl, Label,
   Layers3, LoaderCircle, localAgentProviderIconUrls, mergeProviderModelLists, modelCatalogItemMatchesQuery, motion,
@@ -2188,7 +2188,7 @@ export function AddProviderForm({
     const endpoint = preset ? primaryProviderPresetEndpoint(preset) : undefined;
     const previousPreset = findProviderPreset(draft.presetId);
     const generatedName = providerDraftNameShouldFollowPreset(draft.name, previousPreset, t);
-    const accountDraft = createProviderAccountDraftFromConfig(defaultProviderAccountConfigForPreset(presetId));
+    const accountDraft = createProviderAccountDraftFromConfig(defaultProviderAccountConfigForBaseUrl(endpoint?.baseUrl ?? ""));
     onChange({
       ...accountDraft,
       baseUrl: endpoint?.baseUrl ?? "",

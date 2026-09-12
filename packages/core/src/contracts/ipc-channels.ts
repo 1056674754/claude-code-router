@@ -26,6 +26,7 @@ export const IPC_CHANNELS = {
   appGetRequestLogs: "ccr:app:get-request-logs",
   appGetUpdateStatus: "ccr:app:get-update-status",
   appGetUsageStats: "ccr:app:get-usage-stats",
+  appGetTraySnapshot: "ccr:app:get-tray-snapshot",
   appFetchProviderManifest: "ccr:app:fetch-provider-manifest",
   appInstallProxyCertificate: "ccr:app:install-proxy-certificate",
   appImportLocalAgentProvider: "ccr:app:import-local-agent-provider",

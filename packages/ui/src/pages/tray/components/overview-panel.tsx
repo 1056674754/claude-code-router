@@ -9,6 +9,7 @@ export function UsageOverviewPanel({
   activeStats,
   accountSnapshots,
   accountRefreshing,
+  activitySeries,
   componentVariants,
   loading,
   modules,
@@ -21,6 +22,7 @@ export function UsageOverviewPanel({
   activeStats: UsageStatsSnapshot;
   accountSnapshots: ProviderAccountSnapshot[];
   accountRefreshing?: boolean;
+  activitySeries?: UsageStatsSnapshot["series"];
   componentVariants: TrayComponentVariants;
   loading: boolean;
   modules: ReadonlySet<TrayWindowModuleId>;
@@ -47,7 +49,7 @@ export function UsageOverviewPanel({
       </ChartShell>
       ) : null}
 
-      {modules.has("activity") ? <TokenActivityPanel generatedAt={activeStats.generatedAt} range={activeStats.range} series={activeStats.series} /> : null}
+      {modules.has("activity") ? <TokenActivityPanel activitySeries={activitySeries} series={activeStats.series} /> : null}
 
       {modules.has("stats") ? (
       <StatsGrid

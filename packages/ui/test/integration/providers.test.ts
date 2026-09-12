@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { GatewayProviderConfig } from "@ccr/core/contracts/app.ts";
 import { newApiKeyUsageAccountConfig } from "@ccr/core/providers/new-api.ts";
 import { geminiProviderPreset } from "@ccr/core/providers/presets/gemini/index.ts";
 import { minimaxChinaProviderPreset } from "@ccr/core/providers/presets/minimax/index.ts";
 import { moonshotGlobalProviderPreset } from "@ccr/core/providers/presets/moonshot/index.ts";
 import { qiniuAiProviderPreset } from "@ccr/core/providers/presets/qiniu-ai/index.ts";
 import { xiaomiMimoProviderPreset } from "@ccr/core/providers/presets/xiaomi/index.ts";
+import { zhipuCnCodingProviderPreset } from "@ccr/core/providers/presets/zhipu-cn-coding/index.ts";
 import { AddProviderDialog, AddProviderForm, ProviderConnectivityCheckDialog, ProvidersView, uniqueProviderProbeProtocolRows } from "@ccr/ui/pages/home/components/providers.tsx";
 import {
   applyProviderProbeResult,
@@ -1194,6 +1196,49 @@ test("webcontent-json account config opens as browser draft", () => {
   assert.equal(draft.usageBrowserTimeoutMs, "15000");
   assert.equal(draft.usageBalanceRemainingPath, "$.balance.remaining");
   assert.equal(draft.usageMessagePath, "$.message");
+});
+
+test("disabled account draft persists an explicit opt-out config", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    accountEnabled: false,
+    baseUrl: "https://open.bigmodel.cn/api/anthropic"
+  };
+
+  const account = parseProviderAccountDraft(draft);
+  assert.notEqual(typeof account, "string");
+  if (!account || typeof account === "string") {
+    assert.fail("Expected an explicit disabled account config.");
+  }
+  assert.equal(account.enabled, false);
+  assert.equal(account.connectors?.[0]?.type, "standard");
+
+  const reopened = createProviderAccountDraftFromConfig(account);
+  assert.equal(reopened.accountEnabled, false);
+  assert.equal(reopened.accountMode, "standard");
+});
+
+test("edit draft seeds runtime account inheritance for preset-backed providers", () => {
+  setProviderPresets([zhipuCnCodingProviderPreset]);
+
+  const draft = createProviderDraftFromProvider({
+    api_base_url: "https://open.bigmodel.cn/api/anthropic",
+    api_key: "zhipu-key",
+    models: ["glm-5.2"],
+    name: "Zhipu GLM"
+  } as GatewayProviderConfig);
+
+  assert.equal(draft.accountEnabled, true);
+
+  const disabledDraft = createProviderDraftFromProvider({
+    account: { connectors: [{ auth: "provider-api-key", type: "standard" }], enabled: false },
+    api_base_url: "https://open.bigmodel.cn/api/anthropic",
+    api_key: "zhipu-key",
+    models: ["glm-5.2"],
+    name: "Zhipu GLM"
+  } as GatewayProviderConfig);
+
+  assert.equal(disabledDraft.accountEnabled, false);
 });
 
 test("provider probe keeps anthropic prefix on the protocol capability", () => {

@@ -14,6 +14,7 @@ import {
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   ROUTER_FALLBACK_MAX_RETRY_COUNT,
+  ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS,
   ROUTER_SCRIPT_API_VERSION,
   type RouterRuleScript
 } from "@ccr/core/contracts/app";
@@ -259,15 +260,26 @@ export function RouterFallbackControl({
           />
         </Field>
         {fallback.mode === "retry" ? (
-          <Field label={t("Retries")}>
-            <Input
-              max={ROUTER_FALLBACK_MAX_RETRY_COUNT}
-              min={0}
-              onChange={(event) => updateFallbackPatch({ retryCount: clampNumber(Number(event.target.value), 0, ROUTER_FALLBACK_MAX_RETRY_COUNT) })}
-              type="number"
-              value={String(fallback.retryCount)}
-            />
-          </Field>
+          <>
+            <Field label={t("Retries")}>
+              <Input
+                max={ROUTER_FALLBACK_MAX_RETRY_COUNT}
+                min={0}
+                onChange={(event) => updateFallbackPatch({ retryCount: clampNumber(Number(event.target.value), 0, ROUTER_FALLBACK_MAX_RETRY_COUNT) })}
+                type="number"
+                value={String(fallback.retryCount)}
+              />
+            </Field>
+            <Field label={t("Rate-limit wait (s)")}>
+              <Input
+                max={ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS / 1000}
+                min={0}
+                onChange={(event) => updateFallbackPatch({ rateLimitWaitMs: clampNumber(Number(event.target.value), 0, ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS / 1000) * 1000 })}
+                type="number"
+                value={String(Math.round((fallback.rateLimitWaitMs ?? 0) / 1000))}
+              />
+            </Field>
+          </>
         ) : null}
         {fallback.mode === "model-chain" ? (
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 sm:col-span-2">

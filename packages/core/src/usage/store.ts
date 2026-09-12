@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { decodeClaudeAppGatewayRouteId } from "@ccr/core/agents/claude-app/gateway-routes";
 import { REQUEST_LOGS_DB_FILE, USAGE_DB_FILE } from "@ccr/core/config/constants";
-import { estimateUsageCostUsd, providerModelPricingForUsage } from "@ccr/core/models/pricing-service";
+import {
+  estimateUsageCostUsd,
+  estimateUsageCostUsdFromLoadedCatalog,
+  preloadUsagePriceCatalog,
+  providerModelPricingForUsage
+} from "@ccr/core/models/pricing-service";
 import { createBetterSqliteDatabase, type BetterSqliteDatabase } from "@ccr/core/storage/sqlite-native";
 import { normalizeUsageInputTokens } from "@ccr/core/usage/normalization";
 import { resolveUsageModelAttribution } from "@ccr/core/usage/model-attribution";
@@ -111,7 +116,7 @@ type UsageSnapshot = UsageNumbers & {
 };
 
 const usageEvents = new EventEmitter();
-const usageStatsRanges = new Set<UsageStatsRange>(["today", "24h", "7d", "30d"]);
+const usageStatsRanges = new Set<UsageStatsRange>(["today", "24h", "7d", "30d", "180d"]);
 const usageStatsResetAtKey = "usage_stats_reset_at";
 const emptyTotals: UsageTotals = {
   avgDurationMs: 0,
@@ -132,6 +137,11 @@ export class UsageStore {
   private initPromise?: Promise<SqlDatabase>;
   private readonly requestLogDbFile?: string;
   private requestLogBackfillFailureLogged = false;
+  private rollupsAllDirty = false;
+  private lastBackfillAtMs = 0;
+  private backfillPendingSince?: Date;
+  private backfillSweepRequired = false;
+  private usageCostRepair?: Promise<void>;
 
   constructor(private readonly dbFile: string, options: UsageStoreOptions = {}) {
     this.estimateCost = options.estimateCost ?? estimateUsageCostUsd;
@@ -155,6 +165,11 @@ export class UsageStore {
     const logicalModel = normalizeLabel(event.logicalModel ?? event.model, model);
     const credentialId = normalizeLabel(event.credentialId, "");
     const explicitCost = normalizeOptionalCost(event.costUsd);
+    // Price by the model that actually served the request; the client-facing
+    // model can be an unrelated route alias with a wildly different price.
+    const pricingModel = logicalModel && logicalModel !== "unknown" && logicalModel !== model
+      ? logicalModel
+      : model;
     const estimatedCost = explicitCost === undefined
       ? await this.estimateCost({
           cacheReadTokens,
@@ -162,7 +177,7 @@ export class UsageStore {
           cacheWrite5mTokens,
           cacheWriteTokens,
           inputTokens,
-          model,
+          model: pricingModel,
           outputTokens,
           pricing: event.pricing,
           provider
@@ -283,7 +298,15 @@ export class UsageStore {
     const now = new Date();
     const normalizedRange = normalizeUsageRange(range);
     const since = getRangeSince(normalizedRange, now);
-    this.backfillFromRequestLogs(database, since);
+    this.throttledBackfillFromRequestLogs(database, since);
+    this.scheduleUsageCostRepair();
+    const normalizedFilter = normalizeUsageFilter(filter);
+    if (!normalizedFilter.credential) {
+      const rollupSnapshot = this.readStatsFromRollups(database, normalizedRange, now, normalizedFilter);
+      if (rollupSnapshot) {
+        return rollupSnapshot;
+      }
+    }
     const query = buildUsageWhereClause(since, filter);
 
     return {
@@ -298,9 +321,162 @@ export class UsageStore {
     };
   }
 
+  // Every getStats call used to attach the (multi-GB) request-log database and
+  // scan it; a single panel refresh issued that six times. One pass per cycle
+  // is enough — overlapping calls widen the pending window instead of re-scanning.
+  // After a statistics reset the sweep runs unthrottled until it has imported
+  // the first post-reset rows, so reset semantics stay immediately visible.
+  private throttledBackfillFromRequestLogs(database: SqlDatabase, since: Date): void {
+    const nowMs = Date.now();
+    if (!this.backfillSweepRequired && nowMs - this.lastBackfillAtMs < usageBackfillMinIntervalMs) {
+      this.backfillPendingSince = !this.backfillPendingSince || since < this.backfillPendingSince ? since : this.backfillPendingSince;
+      return;
+    }
+    this.lastBackfillAtMs = nowMs;
+    const pendingSince = this.backfillPendingSince;
+    this.backfillPendingSince = undefined;
+    const imported = this.backfillFromRequestLogs(database, pendingSince && pendingSince < since ? pendingSince : since);
+    if (this.backfillSweepRequired && imported > 0) {
+      this.backfillSweepRequired = false;
+    }
+  }
+
+  // usage_events is the raw fact table; usage_rollups mirrors it aggregated by
+  // local day+hour and routing dimensions. Days are recomputed lazily from an
+  // event-id watermark, so queries touch only buckets that actually changed.
+  private ensureRollupsFresh(database: SqlDatabase): void {
+    const maxId = normalizeCount(queryRows(database, "SELECT COALESCE(MAX(id), 0) AS max_id FROM usage_events")[0]?.max_id);
+    const watermark = normalizeCount(queryRows(database, "SELECT value FROM usage_rollup_meta WHERE key = 'watermark'")[0]?.value);
+    const dirtyAll = this.rollupsAllDirty ||
+      this.rollupTimezoneMoved(database);
+    if (maxId === watermark && !dirtyAll) {
+      return;
+    }
+    const dayRows = dirtyAll
+      ? queryRows(database, "SELECT DISTINCT strftime('%Y-%m-%d', created_at, 'localtime') AS day_key FROM usage_events")
+      : queryRows(database, "SELECT DISTINCT strftime('%Y-%m-%d', created_at, 'localtime') AS day_key FROM usage_events WHERE id > ?", [watermark]);
+    for (const dayKey of dayRows.map((row) => String(row.day_key ?? "")).filter(Boolean)) {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.prepare("DELETE FROM usage_rollups WHERE day_key = ?").run(dayKey);
+        database.prepare(`
+          INSERT INTO usage_rollups
+          SELECT
+            strftime('%Y-%m-%d', created_at, 'localtime') AS day_key,
+            CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour_bucket,
+            provider,
+            model,
+            client,
+            COALESCE(credential_id, ''),
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_write_tokens), 0),
+            COALESCE(SUM(CASE
+              WHEN total_tokens > input_tokens + output_tokens + cache_read_tokens + cache_write_tokens THEN total_tokens
+              ELSE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+            END), 0),
+            COALESCE(SUM(CASE
+              WHEN total_tokens - output_tokens > input_tokens + cache_read_tokens + cache_write_tokens THEN total_tokens - output_tokens
+              ELSE input_tokens + cache_read_tokens + cache_write_tokens
+            END), 0),
+            COALESCE(SUM(duration_ms), 0),
+            COALESCE(SUM(COALESCE(cost_usd, 0)), 0)
+          FROM usage_events
+          WHERE strftime('%Y-%m-%d', created_at, 'localtime') = ?
+          GROUP BY day_key, hour_bucket, provider, model, client, credential_id
+        `).run(dayKey);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    database.prepare(`
+      INSERT INTO usage_rollup_meta (key, value) VALUES ('watermark', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(maxId));
+    this.rollupsAllDirty = false;
+  }
+
+  // day_key/hour_bucket are derived with the OS timezone at build time; when
+  // the machine moves zones the stored days no longer match localtime reads.
+  private rollupTimezoneMoved(database: SqlDatabase): boolean {
+    const currentOffset = String(new Date().getTimezoneOffset());
+    const stored = queryRows(database, "SELECT value FROM usage_rollup_meta WHERE key = 'tz_offset'")[0]?.value;
+    if (stored === undefined) {
+      database.prepare(`
+        INSERT INTO usage_rollup_meta (key, value) VALUES ('tz_offset', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(currentOffset);
+      return false;
+    }
+    if (String(stored) === currentOffset) {
+      return false;
+    }
+    database.prepare(`
+      INSERT INTO usage_rollup_meta (key, value) VALUES ('tz_offset', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(currentOffset);
+    return true;
+  }
+
+  private readStatsFromRollups(database: SqlDatabase, range: UsageStatsRange, now: Date, filter: UsageStatsFilter): UsageStatsSnapshot | undefined {
+    const buckets = buildBuckets(range, now);
+    const firstBucket = buckets[0];
+    if (!firstBucket) {
+      return undefined;
+    }
+    try {
+      this.ensureRollupsFresh(database);
+    } catch (error) {
+      console.warn(`[usage] Failed to refresh usage rollups: ${formatError(error)}`);
+      return undefined;
+    }
+
+    const where = buildRollupWindowClause(firstBucket.key, filter);
+    const totalsRow = queryRows(database, `SELECT ${usageRollupTotalsSelect} FROM usage_rollups WHERE ${where.where}`, where.params)[0];
+    const seriesRows = queryRows(
+      database,
+      `SELECT day_key, hour_bucket, ${usageRollupTotalsSelect} FROM usage_rollups WHERE ${where.where} GROUP BY day_key, hour_bucket`,
+      where.params
+    );
+    const totalsByBucket = new Map(seriesRows.map((row) => [
+      rollupBucketKey(String(row.day_key ?? ""), normalizeCount(row.hour_bucket), range),
+      usageTotalsFromRow(row)
+    ]));
+    const [dayPart, hourPart] = firstBucket.key.split(" ");
+    const [year, month, day] = dayPart.split("-").map(Number);
+    // The whole snapshot reads at bucket granularity: totals, groups, and
+    // recentRequests share the series window so the card stays internally
+    // consistent (totals === sum(series)).
+    const windowSince = hourPart
+      ? new Date(year, month - 1, day, Number(hourPart.slice(0, 2)))
+      : new Date(year, month - 1, day);
+    const rollupModels = readRollupGroupRows(database, where, "provider, model, MAX(credential_id) AS credential_id", "provider, model", 8).map(mapModelGroupRow);
+
+    return {
+      clientModels: applyMaxShare(readRollupGroupRows(database, where, "client, provider, credential_id, model", "client, provider, credential_id, model", 25).map(mapClientModelGroupRow), (row) => row.totalTokens || row.requestCount),
+      generatedAt: now.toISOString(),
+      models: applyMaxShare(rollupModels, (row) => row.totalTokens || row.requestCount),
+      providerModels: applyMaxShare(readRollupGroupRows(database, where, "provider, credential_id, model", "provider, credential_id, model", 25).map(mapProviderModelGroupRow), (row) => row.totalTokens || row.requestCount),
+      range,
+      recentRequests: readRecentRequestRows(database, buildUsageWhereClause(windowSince, filter)),
+      series: buckets.map(({ key, label }) => ({
+        ...(totalsByBucket.get(key) ?? { ...emptyTotals }),
+        bucket: key,
+        label
+      })),
+      totals: usageTotalsFromRow(totalsRow)
+    };
+  }
+
   async getTotalsSince(since: Date, filter: UsageStatsFilter | null | undefined = {}, options: UsageStatsQueryOptions | null | undefined = {}): Promise<UsageTotals> {
     const database = await this.getDatabase();
-    this.backfillFromRequestLogs(database, since);
+    this.throttledBackfillFromRequestLogs(database, since);
+    this.scheduleUsageCostRepair();
     return readUsageTotals(database, buildUsageWhereClause(since, filter, options));
   }
 
@@ -312,6 +488,10 @@ export class UsageStore {
     database.transaction(() => {
       const result = database.prepare("DELETE FROM usage_events").run();
       deletedEvents = Number(result.changes);
+      // Aggregates and their watermark predate the reset; drop them so the
+      // next read rebuilds only from post-reset events.
+      database.prepare("DELETE FROM usage_rollups").run();
+      database.prepare("DELETE FROM usage_rollup_meta").run();
       database.prepare(`
         INSERT INTO usage_metadata (key, value)
         VALUES (?, ?)
@@ -319,8 +499,101 @@ export class UsageStore {
       `).run(usageStatsResetAtKey, resetAt);
     })();
 
+    // The next reads must re-sweep the request log: usageBackfillSinceAfterReset
+    // skips pre-reset rows, and the throttle would otherwise hide new activity
+    // until its interval elapses.
+    this.backfillSweepRequired = true;
+    this.backfillPendingSince = undefined;
+
     usageEvents.emit("recorded");
     return { deletedEvents, resetAt };
+  }
+
+  /**
+   * One sweep per process: prices unpriced events and re-prices events whose
+   * cost was estimated from the client-facing route model instead of the
+   * upstream model that actually served the request.
+   */
+  private scheduleUsageCostRepair(): void {
+    this.usageCostRepair ??= this.repairUsageEventCosts().catch((error) => {
+      console.warn(`[usage] Failed to repair historical usage costs: ${formatError(error)}`);
+    });
+  }
+
+  async settleUsageCostRepairForTest(): Promise<void> {
+    await this.usageCostRepair;
+  }
+
+  private async repairUsageEventCosts(): Promise<void> {
+    await preloadUsagePriceCatalog();
+    const database = await this.getDatabase();
+    const pageSize = 500;
+    let cursor = 0;
+    let repairedAny = false;
+    for (let page = 0; page < 200; page += 1) {
+      const rows = queryRows(database, `
+        SELECT
+          id,
+          model,
+          logical_model,
+          provider,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          cache_write_tokens,
+          cost_usd
+        FROM usage_events
+        WHERE id > ? AND (
+          (
+            cost_usd IS NULL
+            AND input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
+          ) OR (
+            cost_usd IS NOT NULL
+            AND cost_source IN ('', 'models.dev', 'litellm', 'openrouter', 'request_log')
+            AND logical_model != ''
+            AND lower(logical_model) != 'unknown'
+            AND lower(logical_model) != lower(model)
+          )
+        )
+        ORDER BY id
+        LIMIT ?
+      `, [cursor, pageSize]);
+      if (rows.length === 0) {
+        return;
+      }
+      const update = database.prepare("UPDATE usage_events SET cost_usd = ?, cost_source = ? WHERE id = ?");
+      database.transaction(() => {
+        for (const row of rows) {
+          cursor = Math.max(cursor, normalizeCount(row.id));
+          const model = String(row.model ?? "").trim();
+          const logicalModel = String(row.logical_model ?? "").trim();
+          const pricingModel = logicalModel && logicalModel.toLowerCase() !== "unknown" && logicalModel.toLowerCase() !== model.toLowerCase()
+            ? logicalModel
+            : model;
+          const cost = estimateUsageCostUsdFromLoadedCatalog({
+            cacheReadTokens: normalizeCount(row.cache_read_tokens),
+            cacheWriteTokens: normalizeCount(row.cache_write_tokens),
+            inputTokens: normalizeCount(row.input_tokens),
+            model: pricingModel,
+            outputTokens: normalizeCount(row.output_tokens),
+            provider: String(row.provider ?? "")
+          });
+          if (!cost || (row.cost_usd !== null && Math.abs(Number(row.cost_usd) - cost.amountUsd) < 1e-9)) {
+            continue;
+          }
+          update.run(cost.amountUsd, cost.source, normalizeCount(row.id));
+          repairedAny = true;
+        }
+      })();
+      if (rows.length < pageSize) {
+        if (repairedAny) {
+          // Repairs rewrite cost columns in place; the rollup watermark cannot
+          // see them, so force the aggregate days to be rebuilt.
+          this.rollupsAllDirty = true;
+        }
+        return;
+      }
+    }
   }
 
   private async getDatabase(): Promise<SqlDatabase> {
@@ -367,6 +640,29 @@ export class UsageStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS usage_rollups (
+        day_key TEXT NOT NULL,
+        hour_bucket INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        client TEXT NOT NULL DEFAULT '',
+        credential_id TEXT NOT NULL DEFAULT '',
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_key, hour_bucket, provider, model, client, credential_id)
+      );
+      CREATE TABLE IF NOT EXISTS usage_rollup_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
     ensureUsageSchema(database);
 
@@ -374,20 +670,21 @@ export class UsageStore {
     return database;
   }
 
-  private backfillFromRequestLogs(database: SqlDatabase, since: Date): void {
+  private backfillFromRequestLogs(database: SqlDatabase, since: Date): number {
     const requestLogDbFile = this.requestLogDbFile;
     if (!requestLogDbFile || !existsSync(requestLogDbFile)) {
-      return;
+      return 0;
     }
     const backfillSince = usageBackfillSinceAfterReset(database, since);
 
+    let imported = 0;
     let tempRequestLogDbFile: string | undefined;
     try {
       try {
-        this.backfillFromAttachedRequestLog(database, requestLogDbFile, backfillSince);
+        imported = this.backfillFromAttachedRequestLog(database, requestLogDbFile, backfillSince);
       } catch {
         tempRequestLogDbFile = copySqliteDatabaseToTemp(requestLogDbFile);
-        this.backfillFromAttachedRequestLog(database, tempRequestLogDbFile, backfillSince);
+        imported = this.backfillFromAttachedRequestLog(database, tempRequestLogDbFile, backfillSince);
       }
       this.requestLogBackfillFailureLogged = false;
     } catch (error) {
@@ -400,12 +697,13 @@ export class UsageStore {
         cleanupSqliteTempCopy(tempRequestLogDbFile);
       }
     }
+    return imported;
   }
 
-  private backfillFromAttachedRequestLog(database: SqlDatabase, requestLogDbFile: string, since: Date): void {
+  private backfillFromAttachedRequestLog(database: SqlDatabase, requestLogDbFile: string, since: Date): number {
     database.exec(`ATTACH DATABASE ${sqlString(requestLogDbFile)} AS request_log_source`);
     try {
-      database.prepare(`
+      return database.prepare(`
           INSERT INTO usage_events (
             created_at,
             request_id,
@@ -462,7 +760,7 @@ export class UsageStore {
                 AND existing.model = logs.model
               )
             )
-        `).run("%/count_tokens%", since.toISOString());
+        `).run("%/count_tokens%", since.toISOString()).changes;
     } finally {
       database.exec("DETACH DATABASE request_log_source");
     }
@@ -728,6 +1026,60 @@ const usageTotalsSelect = `
             END), 0) AS prompt_tokens
 `;
 
+const usageBackfillMinIntervalMs = 1500;
+
+const usageRollupTotalsSelect = `
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+      COALESCE(SUM(computed_total_tokens), 0) AS computed_total_tokens,
+      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+      COALESCE(SUM(cost_usd), 0) AS cost_usd,
+      COALESCE(SUM(duration_ms), 0) AS duration_ms,
+      COALESCE(SUM(success_count), 0) AS success_count
+`;
+
+function rollupBucketKey(dayKey: string, hourBucket: number, range: UsageStatsRange): string {
+  if (range === "today" || range === "24h") {
+    return `${dayKey} ${String(hourBucket).padStart(2, "0")}:00`;
+  }
+  if (range === "7d") {
+    return `${dayKey} ${String(Math.floor(hourBucket / 5) * 5).padStart(2, "0")}:00`;
+  }
+  return dayKey;
+}
+
+function buildRollupWindowClause(firstBucketKey: string, filter: UsageStatsFilter): UsageWhereClause {
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  const separator = firstBucketKey.indexOf(" ");
+  if (separator > 0) {
+    const dayKey = firstBucketKey.slice(0, separator);
+    const hourBucket = Number(firstBucketKey.slice(separator + 1, separator + 3));
+    where.push("(day_key > ? OR (day_key = ? AND hour_bucket >= ?))");
+    params.push(dayKey, dayKey, hourBucket);
+  } else {
+    where.push("day_key >= ?");
+    params.push(firstBucketKey);
+  }
+  const provider = normalizeFilterValue(filter.provider);
+  if (provider) {
+    where.push("provider = ?");
+    params.push(provider);
+  } else if (filter.includeProxy !== true) {
+    where.push("provider <> ?");
+    params.push("proxy");
+  }
+  const model = normalizeFilterValue(filter.model);
+  if (model) {
+    where.push("model = ?");
+    params.push(model);
+  }
+  return { params, where: where.join(" AND ") };
+}
+
 function readUsageTotals(database: SqlDatabase, query: UsageWhereClause): UsageTotals {
   const row = queryRows(
     database,
@@ -748,10 +1100,12 @@ function readUsageSeries(
   now: Date,
   query: UsageWhereClause
 ): UsageSeriesPoint[] {
-  const unit: "day" | "hour" = range === "today" || range === "24h" ? "hour" : "day";
+  const unit: "day" | "fiveHour" | "hour" = range === "today" || range === "24h" ? "hour" : range === "7d" ? "fiveHour" : "day";
   const bucketExpression = unit === "hour"
     ? "strftime('%Y-%m-%d %H:00', created_at, 'localtime')"
-    : "strftime('%Y-%m-%d', created_at, 'localtime')";
+    : unit === "fiveHour"
+      ? "strftime('%Y-%m-%d', created_at, 'localtime') || ' ' || printf('%02d', (CAST(strftime('%H', created_at, 'localtime') AS INTEGER) / 5) * 5) || ':00'"
+      : "strftime('%Y-%m-%d', created_at, 'localtime')";
   const rows = queryRows(
     database,
     `
@@ -773,14 +1127,8 @@ function readUsageSeries(
   }));
 }
 
-function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageComparisonRow[] {
-  const rows = readUsageGroupRows(
-    database,
-    query,
-    "provider, model",
-    "provider, model, MAX(credential_id) AS credential_id",
-    8
-  ).map((row) => ({
+function mapModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  return {
     ...usageTotalsFromRow(row),
     caption: normalizeLabel(String(row.provider ?? ""), "unknown"),
     credentialId: normalizeFilterValue(String(row.credential_id ?? "")),
@@ -789,7 +1137,51 @@ function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageCom
     maxShare: 0,
     model: normalizeLabel(String(row.model ?? ""), "unknown"),
     provider: normalizeLabel(String(row.provider ?? ""), "unknown")
-  }));
+  };
+}
+
+function mapClientModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  const client = normalizeLabel(String(row.client ?? ""), "unknown");
+  const model = normalizeLabel(String(row.model ?? ""), "unknown");
+  const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
+  const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
+  return {
+    ...usageTotalsFromRow(row),
+    caption: credentialId ? `${provider} / ${credentialId} / ${model}` : `${provider} / ${model}`,
+    client,
+    credentialId: credentialId || undefined,
+    key: `${client}::${provider}::${credentialId}::${model}`,
+    label: client,
+    maxShare: 0,
+    model,
+    provider
+  };
+}
+
+function mapProviderModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  const model = normalizeLabel(String(row.model ?? ""), "unknown");
+  const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
+  const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
+  return {
+    ...usageTotalsFromRow(row),
+    caption: credentialId ? `${credentialId} / ${model}` : model,
+    credentialId: credentialId || undefined,
+    key: `${provider}::${credentialId}::${model}`,
+    label: provider,
+    maxShare: 0,
+    model,
+    provider
+  };
+}
+
+function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageComparisonRow[] {
+  const rows = readUsageGroupRows(
+    database,
+    query,
+    "provider, model",
+    "provider, model, MAX(credential_id) AS credential_id",
+    8
+  ).map(mapModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
 }
 
@@ -800,23 +1192,7 @@ function readClientModelRows(database: SqlDatabase, query: UsageWhereClause): Us
     "client, provider, credential_id, model",
     "client, provider, credential_id, model",
     25
-  ).map((row) => {
-    const client = normalizeLabel(String(row.client ?? ""), "unknown");
-    const model = normalizeLabel(String(row.model ?? ""), "unknown");
-    const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
-    const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
-    return {
-      ...usageTotalsFromRow(row),
-      caption: credentialId ? `${provider} / ${credentialId} / ${model}` : `${provider} / ${model}`,
-      client,
-      credentialId: credentialId || undefined,
-      key: `${client}::${provider}::${credentialId}::${model}`,
-      label: client,
-      maxShare: 0,
-      model,
-      provider
-    };
-  });
+  ).map(mapClientModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
 }
 
@@ -827,22 +1203,31 @@ function readProviderModelRows(database: SqlDatabase, query: UsageWhereClause): 
     "provider, credential_id, model",
     "provider, credential_id, model",
     25
-  ).map((row) => {
-    const model = normalizeLabel(String(row.model ?? ""), "unknown");
-    const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
-    const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
-    return {
-      ...usageTotalsFromRow(row),
-      caption: credentialId ? `${credentialId} / ${model}` : model,
-      credentialId: credentialId || undefined,
-      key: `${provider}::${credentialId}::${model}`,
-      label: provider,
-      maxShare: 0,
-      model,
-      provider
-    };
-  });
+  ).map(mapProviderModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
+}
+
+function readRollupGroupRows(
+  database: SqlDatabase,
+  where: UsageWhereClause,
+  selectColumns: string,
+  groupBy: string,
+  limit: number
+): Record<string, SqlValue>[] {
+  return queryRows(
+    database,
+    `
+      SELECT
+        ${selectColumns},
+        ${usageRollupTotalsSelect}
+      FROM usage_rollups
+      WHERE ${where.where}
+      GROUP BY ${groupBy}
+      ORDER BY computed_total_tokens DESC, request_count DESC
+      LIMIT ?
+    `,
+    [...where.params, limit]
+  );
 }
 
 function readUsageGroupRows(
@@ -926,9 +1311,10 @@ function usageTotalsFromRow(row: Record<string, SqlValue> | undefined): UsageTot
 
 function buildSeries(range: UsageStatsRange, now: Date, events: StoredUsageEvent[]): UsageSeriesPoint[] {
   const buckets = buildBuckets(range, now);
+  const unit = range === "today" || range === "24h" ? "hour" : range === "7d" ? "fiveHour" : "day";
   const grouped = new Map<string, StoredUsageEvent[]>();
   for (const event of events) {
-    const key = formatBucketKey(new Date(event.createdAt), range === "today" || range === "24h" ? "hour" : "day");
+    const key = formatBucketKey(new Date(event.createdAt), unit);
     const bucket = grouped.get(key) ?? [];
     bucket.push(event);
     grouped.set(key, bucket);
@@ -961,7 +1347,22 @@ function buildBuckets(
     });
   }
 
-  const count = range === "7d" ? 7 : 30;
+  if (range === "7d") {
+    // 5-hour buckets over the last 7 days: 168h / 5h = 34 windows, the last
+    // one a 3h partial. Matches the 5-hour quota round most providers use.
+    const start = floorDay(now);
+    start.setDate(start.getDate() - 6);
+    return Array.from({ length: 34 }, (_, index) => {
+      const date = new Date(start);
+      date.setHours(start.getHours() + index * 5);
+      return {
+        key: formatBucketKey(date, "fiveHour"),
+        label: `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:00`
+      };
+    });
+  }
+
+  const count = range === "180d" ? 180 : 30;
   const start = floorDay(now);
   start.setDate(start.getDate() - (count - 1));
   return Array.from({ length: count }, (_, index) => {
@@ -1316,6 +1717,8 @@ function getRangeSince(range: UsageStatsRange, now: Date): Date {
     date.setHours(date.getHours() - 24);
   } else if (range === "7d") {
     date.setDate(date.getDate() - 7);
+  } else if (range === "180d") {
+    date.setDate(date.getDate() - 180);
   } else {
     date.setDate(date.getDate() - 30);
   }
@@ -1334,14 +1737,15 @@ function floorDay(date: Date): Date {
   return next;
 }
 
-function formatBucketKey(date: Date, unit: "day" | "hour"): string {
+function formatBucketKey(date: Date, unit: "day" | "fiveHour" | "hour"): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   if (unit === "day") {
     return `${year}-${month}-${day}`;
   }
-  const hour = String(date.getHours()).padStart(2, "0");
+  const rawHour = unit === "fiveHour" ? Math.floor(date.getHours() / 5) * 5 : date.getHours();
+  const hour = String(rawHour).padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:00`;
 }
 

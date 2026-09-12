@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { LoaderCircle, Power, RefreshCw } from "lucide-react";
 import appLogoUrl from "@/assets/logo.png";
@@ -29,11 +29,11 @@ import type {
 } from "@ccr/core/contracts/app";
 
 export  {
-  createContext, useCallback, useContext, useEffect, useMemo, useState, createRoot,
+  createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, createRoot,
   LoaderCircle, Power, RefreshCw, appLogoUrl, trayCyanIconUrl, trayOrangeIconUrl, trayVioletIconUrl, DEFAULT_TRAY_COMPONENT_VARIANTS, DEFAULT_TRAY_WIDGETS, DEFAULT_TRAY_WINDOW_MODULES, TRAY_SINGLETON_WIDGET_TYPES, TRAY_TOP_WIDGET_TYPES, TRAY_WINDOW_MODULE_IDS
 };
 export type {
-  ReactNode, AppConfig, ProviderAccountMeter, ProviderAccountSnapshot, TrayBalanceProgressConfig, TrayComponentVariants, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow,
+  ReactNode, AppConfig, GatewayProviderConfig, ProviderAccountMeter, ProviderAccountSnapshot, TrayBalanceProgressConfig, TrayComponentVariants, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow,
   UsageStatsFilter, UsageStatsRange, UsageStatsSnapshot, UsageTotals
 };
 
@@ -87,8 +87,8 @@ export const trayText: Record<ResolvedLanguage, Record<string, string>> = {
     "Monthly budget": "月度预算",
     "Model Share": "模型占比",
     "More": "多",
-    "No account data configured": "未配置账户数据",
     "No model yet": "暂无模型",
+    "No supported account usage endpoint is available for this provider. Configure an HTTP JSON connector or disable account balance.": "该供应商暂无可用的账户用量端点。请配置 HTTP JSON 连接器，或关闭账户余额读取。",
     "No tray modules enabled": "未启用 Tray 模块",
     "No usage captured yet": "暂无用量记录",
     "Output": "输出",
@@ -205,7 +205,8 @@ export const emptySnapshots: SnapshotMap = {
   today: createEmptySnapshot("today"),
   "24h": createEmptySnapshot("24h"),
   "7d": createEmptySnapshot("7d"),
-  "30d": createEmptySnapshot("30d")
+  "30d": createEmptySnapshot("30d"),
+  "180d": createEmptySnapshot("180d")
 };
 
 export function TrayI18nProvider({ children }: { children: ReactNode }) {
@@ -593,13 +594,19 @@ export function createEmptySnapshot(range: UsageStatsRange): UsageStatsSnapshot 
 
 export function createEmptySeries(range: UsageStatsRange): UsageStatsSnapshot["series"] {
   const now = new Date();
-  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "7d" ? 7 : 30;
+  const count = range === "today" ? now.getHours() + 1 : range === "24h" ? 24 : range === "180d" ? 180 : range === "7d" ? 34 : 30;
   return Array.from({ length: count }, (_, index) => {
     const date = new Date(now);
     if (range === "today") {
       date.setHours(index, 0, 0, 0);
     } else if (range === "24h") {
       date.setHours(now.getHours() - (count - 1 - index), 0, 0, 0);
+    } else if (range === "7d") {
+      // Mirror the store's 5-hour buckets: floor to local day, step 5h.
+      const start = new Date(date);
+      start.setHours(0, 0, 0, 0);
+      start.setDate(start.getDate() - 6);
+      date.setTime(start.getTime() + index * 5 * 60 * 60 * 1000);
     } else {
       date.setDate(now.getDate() - (count - 1 - index));
       date.setHours(0, 0, 0, 0);
@@ -607,7 +614,11 @@ export function createEmptySeries(range: UsageStatsRange): UsageStatsSnapshot["s
     return {
       ...emptyTotals,
       bucket: date.toISOString(),
-      label: range === "today" || range === "24h" ? `${String(date.getHours()).padStart(2, "0")}:00` : `${date.getMonth() + 1}/${date.getDate()}`
+      label: range === "today" || range === "24h"
+        ? `${String(date.getHours()).padStart(2, "0")}:00`
+        : range === "7d"
+          ? `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:00`
+          : `${date.getMonth() + 1}/${date.getDate()}`
     };
   });
 }

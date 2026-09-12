@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { RequestLogStore } from "@ccr/core/observability/request-log-store.ts";
+import { resetUsagePriceCatalogForTest } from "@ccr/core/models/pricing-service.ts";
 import { createBetterSqliteDatabase } from "@ccr/core/storage/sqlite-native.ts";
 import { GatewayBillingSynchronizer } from "@ccr/core/usage/billing-sync.ts";
 import { resolveUsageModelAttribution } from "@ccr/core/usage/model-attribution.ts";
@@ -96,6 +97,64 @@ test("usage attribution preserves slash-containing physical model IDs", () => {
     logicalModel: model,
     model
   });
+});
+
+test("UsageStore supports the 180d range with daily buckets", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    await store.record({
+      createdAt: new Date().toISOString(),
+      durationMs: 10,
+      method: "POST",
+      model: "long-window",
+      path: "/v1/messages",
+      provider: "alpha",
+      requestId: "req-180d",
+      statusCode: 200,
+      usage: { inputTokens: 8, outputTokens: 2 }
+    });
+
+    const stats = await store.getStats("180d", { includeProxy: true });
+    assert.equal(stats.totals.totalTokens, 10);
+    assert.equal(stats.series.length, 180);
+    assert.equal(stats.range, "180d");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("UsageStore buckets the 7d range into aligned 5-hour windows", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-7d-buckets-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    const now = new Date();
+    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    for (const [createdAt, requestId] of [[now, "req-7d-now"], [threeDaysAgo, "req-7d-old"]]) {
+      await store.record({
+        createdAt: createdAt.toISOString(),
+        durationMs: 10,
+        method: "POST",
+        model: "windowed",
+        path: "/v1/messages",
+        provider: "alpha",
+        requestId,
+        statusCode: 200,
+        usage: { inputTokens: 5, outputTokens: 1 }
+      });
+    }
+
+    const stats = await store.getStats("7d", { includeProxy: true });
+    assert.equal(stats.series.length, 34);
+    for (const point of stats.series) {
+      assert.match(point.bucket, /^\d{4}-\d{2}-\d{2} (00|05|10|15|20):00$/);
+    }
+    const filled = stats.series.filter((point) => point.requestCount > 0);
+    assert.equal(filled.reduce((sum, point) => sum + point.requestCount, 0), 2);
+    assert.ok(filled.length >= 2);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("UsageStore aggregates stats in SQLite without loading all events", async () => {
@@ -715,3 +774,156 @@ test("UsageStore reset clears overview stats and does not backfill old request l
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("UsageStore prices usage by the upstream logical model instead of the route alias", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
+  try {
+    const pricedModels = [];
+    const store = new UsageStore(path.join(dir, "usage.sqlite"), {
+      estimateCost: async (input) => {
+        pricedModels.push(input.model ?? "");
+        return { amountUsd: 0.01, model: input.model ?? "", source: "models.dev" };
+      }
+    });
+
+    await store.record({
+      durationMs: 10,
+      logicalModel: "Ctyun/deepseek-v4-flash-vision-exp-0817",
+      method: "POST",
+      model: "claude-opus-5",
+      path: "/v1/messages",
+      provider: "Ctyun",
+      requestId: "req-alias",
+      statusCode: 200,
+      usage: { inputTokens: 10, outputTokens: 5 }
+    });
+    await store.record({
+      durationMs: 10,
+      logicalModel: "glm-5.3",
+      method: "POST",
+      model: "glm-5.3",
+      path: "/v1/messages",
+      provider: "Zhipu GLM",
+      requestId: "req-same",
+      statusCode: 200,
+      usage: { inputTokens: 10, outputTokens: 5 }
+    });
+
+    assert.deepEqual(pricedModels, [
+      "Ctyun/deepseek-v4-flash-vision-exp-0817",
+      "glm-5.3"
+    ]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("UsageStore repairs mispriced and unpriced historical events from the upstream model", async (t) => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("models.dev")) {
+      return new Response(JSON.stringify({
+        deepseek: {
+          models: {
+            "deepseek-v4-flash-vision-exp": {
+              cost: { input: 0.242, output: 0.726 },
+              id: "deepseek-v4-flash-vision-exp"
+            }
+          }
+        }
+      }), { headers: { "content-type": "application/json" } });
+    }
+    return new Response(url.includes("openrouter") ? "{\"data\":[]}" : "{}", {
+      headers: { "content-type": "application/json" }
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    resetUsagePriceCatalogForTest();
+  });
+  resetUsagePriceCatalogForTest();
+
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
+  try {
+    const dbFile = path.join(dir, "usage.sqlite");
+    const store = new UsageStore(dbFile, {
+      estimateCost: async () => undefined
+    });
+    for (const requestId of ["legacy-unpriced", "legacy-mispriced"]) {
+      await store.record({
+        durationMs: 10,
+        logicalModel: "Ctyun/deepseek-v4-flash-vision-exp-0817",
+        method: "POST",
+        model: "claude-opus-5",
+        path: "/v1/messages",
+        provider: "Ctyun",
+        requestId,
+        statusCode: 200,
+        usage: { inputTokens: requestId === "legacy-unpriced" ? 1_000_000 : 2_000_000 }
+      });
+    }
+
+    const seed = createBetterSqliteDatabase(dbFile);
+    seed.exec("UPDATE usage_events SET cost_usd = 46.381, cost_source = 'models.dev' WHERE request_id = 'legacy-mispriced'");
+    seed.close();
+
+    await store.getStats("30d", { includeProxy: true });
+    await store.settleUsageCostRepairForTest();
+
+    const verify = createBetterSqliteDatabase(dbFile);
+    const rows = verify.prepare("SELECT request_id, cost_usd, cost_source FROM usage_events ORDER BY request_id").all();
+    verify.close();
+
+    const unpriced = rows.find((row) => row.request_id === "legacy-unpriced");
+    const mispriced = rows.find((row) => row.request_id === "legacy-mispriced");
+    assert.ok(Math.abs((unpriced?.cost_usd ?? 0) - 0.242) < 1e-9);
+    assert.equal(unpriced?.cost_source, "models.dev");
+    assert.ok(Math.abs((mispriced?.cost_usd ?? 0) - 0.484) < 1e-9);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("UsageStore rollup path keeps totals, shares, and window edges consistent", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-rollup-consistency-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    const now = new Date();
+    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+    for (const [createdAt, requestId, tokens] of [
+      [now, "req-rollup-now", 7],
+      [threeDaysAgo, "req-rollup-mid", 11],
+      [eightDaysAgo, "req-rollup-old", 500]
+    ]) {
+      await store.record({
+        createdAt: createdAt.toISOString(),
+        durationMs: 12,
+        method: "POST",
+        model: "rollup-model",
+        path: "/v1/messages",
+        provider: "alpha",
+        requestId,
+        statusCode: requestId === "req-rollup-now" ? 500 : 200,
+        usage: { inputTokens: tokens, outputTokens: 1 }
+      });
+    }
+
+    const stats = await store.getStats("7d", { includeProxy: true });
+    const seriesTotal = stats.series.reduce((sum, point) => sum + point.requestCount, 0);
+    assert.equal(stats.totals.requestCount, seriesTotal);
+    assert.equal(stats.totals.requestCount, 2);
+    assert.equal(stats.totals.errorCount, 1);
+
+    const model = stats.models.find((row) => row.model === "rollup-model");
+    assert.ok(model);
+    assert.equal(model.maxShare, 1);
+    assert.ok(stats.providerModels.every((row) => row.maxShare > 0));
+    assert.ok(stats.clientModels.every((row) => row.maxShare > 0));
+    assert.ok(stats.recentRequests.every((row) => row.model === "rollup-model"));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+

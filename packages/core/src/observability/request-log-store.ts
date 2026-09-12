@@ -403,6 +403,7 @@ export class RequestLogStore {
   private insertRequestStatement?: BetterSqliteStatement;
   private insertRouteTraceStatement?: BetterSqliteStatement;
   private lastRetentionCleanupDay?: string;
+  private lastVacuumDay?: string;
   private revision = 0;
   private analysisCache?: AgentAnalysisCacheEntry;
 
@@ -1498,6 +1499,7 @@ export class RequestLogStore {
 
     this.database = database;
     this.pruneOldRequestLogs(database);
+    this.vacuumIfBloated(database);
     return database;
   }
 
@@ -1542,6 +1544,33 @@ export class RequestLogStore {
     ).run(cutoff);
     deleteRequestLogBodyRefs(this.bodyDir, refs);
     this.lastRetentionCleanupDay = dayKey;
+  }
+
+  // Retention deletes rows daily but SQLite never returns those pages to the
+  // OS on its own — the file kept growing for hundreds of MB of dead pages.
+  private vacuumIfBloated(database: SqlDatabase): void {
+    // VACUUM cannot run inside a transaction; prune call sites are often
+    // wrapped in one, so the startup path below is the reliable trigger.
+    if (database.inTransaction) {
+      return;
+    }
+    const dayKey = formatLocalDayKey(new Date());
+    if (this.lastVacuumDay === dayKey) {
+      return;
+    }
+    this.lastVacuumDay = dayKey;
+    try {
+      const pageCount = firstNumber(queryRows(database, "PRAGMA page_count"), "page_count") ?? 0;
+      const freelistCount = firstNumber(queryRows(database, "PRAGMA freelist_count"), "freelist_count") ?? 0;
+      if (pageCount <= 0 || freelistCount / pageCount <= 0.25) {
+        return;
+      }
+      const vacuumStartedAt = Date.now();
+      database.exec("VACUUM");
+      console.warn(`[request-log] Reclaimed ${Math.round((freelistCount * 4096) / 1_000_000)}MB of free pages via VACUUM in ${Date.now() - vacuumStartedAt}ms`);
+    } catch (error) {
+      console.warn(`[request-log] Failed to vacuum request log database: ${formatError(error)}`);
+    }
   }
 
   private storePendingRawTraceUpdate(database: SqlDatabase, input: RequestLogRawTraceUpdateInput): void {

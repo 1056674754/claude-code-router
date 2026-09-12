@@ -13,7 +13,7 @@ import { LEGACY_ACTIVE_CONFIG_FILE, LEGACY_CONFIG_FILE, LEGACY_WINDOWS_CONFIG_FI
 import { normalizeCodexProviderAccountConfig } from "@ccr/core/agents/local-providers/codex";
 import { normalizeGrokProviderAccountConfig, normalizeGrokProviderMediaCapabilities } from "@ccr/core/agents/local-providers/grok";
 import { removeOpenCodeProviderAccountConfig } from "@ccr/core/agents/local-providers/opencode";
-import { CLAUDE_CODE_DEFAULT_ENV, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY_ENV, CLAUDE_DESIGN_PLUGIN_ID, CLAUDE_SHIP_PLUGIN_ID, DEFAULT_TRAY_COMPONENT_VARIANTS, GATEWAY_PLUGIN_PERMISSION_IDS, GATEWAY_PLUGIN_SURFACE_IDS, OVERVIEW_WIDGET_SIZE_VALUES, ROUTER_FALLBACK_MAX_RETRY_COUNT, ROUTER_SCRIPT_API_VERSION, ROUTER_SCRIPT_DEFAULT_TIMEOUT_MS, ROUTER_SCRIPT_MAX_TIMEOUT_MS, TRAY_SINGLETON_WIDGET_TYPES, TRAY_TOP_WIDGET_TYPES, TRAY_WINDOW_MODULE_IDS, enforceSingleEnabledGlobalProfilePerAgent, isEnabledGlobalProfile, knownGatewayPluginDefaultApps, knownGatewayPluginDefaultPermissions, knownGatewayPluginDefaultSurfaces } from "@ccr/core/contracts/app";
+import { CLAUDE_CODE_DEFAULT_ENV, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY_ENV, CLAUDE_DESIGN_PLUGIN_ID, CLAUDE_SHIP_PLUGIN_ID, DEFAULT_TRAY_COMPONENT_VARIANTS, GATEWAY_PLUGIN_PERMISSION_IDS, GATEWAY_PLUGIN_SURFACE_IDS, OVERVIEW_WIDGET_SIZE_VALUES, ROUTER_FALLBACK_MAX_RETRY_COUNT, ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS, ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS, ROUTER_SCRIPT_API_VERSION, ROUTER_SCRIPT_DEFAULT_TIMEOUT_MS, ROUTER_SCRIPT_MAX_TIMEOUT_MS, TRAY_SINGLETON_WIDGET_TYPES, TRAY_TOP_WIDGET_TYPES, TRAY_WINDOW_MODULE_IDS, enforceSingleEnabledGlobalProfilePerAgent, isEnabledGlobalProfile, knownGatewayPluginDefaultApps, knownGatewayPluginDefaultPermissions, knownGatewayPluginDefaultSurfaces } from "@ccr/core/contracts/app";
 import { createDefaultAppConfig } from "@ccr/core/config/default-config";
 import { maxRequestLogBodyBytes } from "@ccr/core/observability/request-log-limits";
 import { findProviderPresetByBaseUrl, primaryProviderPresetEndpoint, providerApiKeySafetyIssue, providerEndpointCanReceiveProviderApiKey } from "@ccr/core/providers/presets/index";
@@ -812,6 +812,10 @@ function pickConfig(value: Partial<AppConfig>): LoadedAppConfig {
   if (botConfigs) {
     config.botConfigs = botConfigs;
   }
+  const claudeAppDesktop = parseClaudeAppDesktop((value as Record<string, unknown>).claudeAppDesktop);
+  if (claudeAppDesktop) {
+    config.claudeAppDesktop = claudeAppDesktop;
+  }
   const contextArchive = parseContextArchive((value as Record<string, unknown>).contextArchive ?? (value as Record<string, unknown>).context_archive);
   if (contextArchive) {
     config.contextArchive = contextArchive;
@@ -1485,6 +1489,40 @@ function parseModelDescriptions(value: unknown, models: string[]): Record<string
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+function parseClaudeAppDesktop(value: unknown): AppConfig["claudeAppDesktop"] {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const rawModels = value.models;
+  if (!Array.isArray(rawModels)) {
+    return undefined;
+  }
+  const models: NonNullable<AppConfig["claudeAppDesktop"]>["models"] = [];
+  for (const item of rawModels) {
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (name) {
+        models.push({ name });
+      }
+      continue;
+    }
+    if (!isObject(item)) {
+      continue;
+    }
+    const name = readString(item.name)?.trim();
+    if (!name) {
+      continue;
+    }
+    const label = readString(item.label)?.trim();
+    models.push({
+      name,
+      ...(label ? { label } : {}),
+      ...(item.supports1m === true ? { supports1m: true } : {})
+    });
+  }
+  return models.length > 0 ? { models } : undefined;
+}
+
 function parseModelDisplayNames(value: unknown, models: string[]): Record<string, string> | undefined {
   if (!isObject(value)) {
     return undefined;
@@ -1891,6 +1929,11 @@ function parseRouterFallback(value: unknown): RouterFallbackConfig | undefined {
     parseRouterFallbackMode(value.strategy) ??
     inferRouterFallbackMode(value);
   const retryCount = clampNumber(readNumber(value.retryCount ?? value.retries ?? value.maxRetries) ?? 1, 0, ROUTER_FALLBACK_MAX_RETRY_COUNT);
+  const rateLimitWaitMs = clampNumber(
+    readNumber(value.rateLimitWaitMs) ?? ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS,
+    0,
+    ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS
+  );
   const models = parseStringList(value.models ?? value.chain ?? value.fallbackModels)
     .map((model) => model.trim())
     .filter(Boolean);
@@ -1898,6 +1941,7 @@ function parseRouterFallback(value: unknown): RouterFallbackConfig | undefined {
   return {
     mode,
     models: uniqueStrings(models),
+    rateLimitWaitMs,
     retryCount
   };
 }

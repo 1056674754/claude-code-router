@@ -138,6 +138,7 @@ const webClientBridge: CcrApi = {
   getRequestLogs: (filter) => rpc("getRequestLogs", [filter]) as ReturnType<CcrApi["getRequestLogs"]>,
   getUpdateStatus: () => rpc("getUpdateStatus") as ReturnType<CcrApi["getUpdateStatus"]>,
   getUsageStats: (range, filter) => rpc("getUsageStats", [range, filter]) as ReturnType<CcrApi["getUsageStats"]>,
+  getTraySnapshot: () => Promise.reject(new Error("The tray snapshot is only available in the desktop app.")) as ReturnType<CcrApi["getTraySnapshot"]>,
   importLocalAgentProvider: (request) => rpc("importLocalAgentProvider", [request]) as ReturnType<CcrApi["importLocalAgentProvider"]>,
   installProxyCertificate: () => rpc("installProxyCertificate") as ReturnType<CcrApi["installProxyCertificate"]>,
   listMcpServerTools: (serverName) => rpc("listMcpServerTools", [serverName]) as ReturnType<CcrApi["listMcpServerTools"]>,

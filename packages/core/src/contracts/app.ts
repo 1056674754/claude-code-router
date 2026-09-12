@@ -741,8 +741,14 @@ export const ROUTER_FALLBACK_MAX_RETRY_COUNT = 9999;
 export type RouterFallbackConfig = {
   mode: RouterFallbackMode;
   models: string[];
+  rateLimitWaitMs?: number;
   retryCount: number;
 };
+
+// While a client request is held through upstream rate-limit windows, wait at
+// most this long before surfacing the 429 to the client.
+export const ROUTER_FALLBACK_RATE_LIMIT_DEFAULT_WAIT_MS = 120_000;
+export const ROUTER_FALLBACK_RATE_LIMIT_MAX_WAIT_MS = 600_000;
 
 export type RouterBuiltInAgentRuleId = "claude-code" | "codex";
 
@@ -1840,6 +1846,7 @@ export type AppConfig = {
   autoStart: boolean;
   botConfigs: BotGatewaySavedConfig[];
   botGateway: BotGatewayRuntimeConfig;
+  claudeAppDesktop?: ClaudeAppDesktopConfig;
   contextArchive: ContextArchiveConfig;
   gateway: GatewayRuntimeConfig;
   mediaTools: MediaToolsConfig;
@@ -1865,6 +1872,16 @@ export type AppConfig = {
 
 export type AppSaveConfigOptions = {
   applyProfile?: boolean;
+};
+
+export type ClaudeAppDesktopModelSlot = {
+  label?: string;
+  name: string;
+  supports1m?: boolean;
+};
+
+export type ClaudeAppDesktopConfig = {
+  models?: Array<ClaudeAppDesktopModelSlot | string>;
 };
 
 export type ClaudeAppGatewayApplyResult = {
@@ -2246,7 +2263,14 @@ export type RequestLogPage = {
   totalPages: number;
 };
 
-export type UsageStatsRange = "today" | "24h" | "7d" | "30d";
+export type UsageStatsRange = "today" | "24h" | "7d" | "30d" | "180d";
+
+export type TrayUsageSnapshotPayload = {
+  accounts: ProviderAccountSnapshot[];
+  allMonth?: UsageStatsSnapshot;
+  config: AppConfig;
+  snapshots: Record<"180d" | "24h" | "30d" | "7d" | "today", UsageStatsSnapshot>;
+};
 
 export type UsageStatsFilter = {
   credential?: string;

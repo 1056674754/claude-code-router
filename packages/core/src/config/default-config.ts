@@ -42,9 +42,10 @@ export function createDefaultAppConfig(options: DefaultAppConfigOptions = {}): A
         }
       },
       fallback: {
-        mode: "off",
+        mode: "retry",
         models: [],
-        retryCount: 1
+        rateLimitWaitMs: 120_000,
+        retryCount: 2
       },
       rules: []
     },

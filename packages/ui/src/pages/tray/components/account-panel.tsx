@@ -22,11 +22,7 @@ export function AccountSummaryPanel({
   const selectedSnapshots = accountSnapshotsForDisplay(snapshots, accountProviders);
 
   if (selectedSnapshots.length === 0) {
-    return (
-      <div className="tray-panel-subtle px-3 py-2 text-[11px] font-medium text-slate-400">
-        {t("No account data configured")}
-      </div>
-    );
+    return null;
   }
 
   const title = selectedSnapshots.length === 1
@@ -75,7 +71,7 @@ function accountSnapshotsForDisplay(
 ): ProviderAccountSnapshot[] {
   const selected = new Set((accountProviders ?? []).map((provider) => provider.trim()).filter(Boolean));
   return snapshots
-    .filter((snapshot) => snapshot.meters.length > 0 || snapshot.status === "error")
+    .filter((snapshot) => snapshot.meters.length > 0 || snapshot.status === "error" || snapshot.status === "unsupported")
     .filter((snapshot) => selected.size === 0 || selected.has(accountSnapshotKey(snapshot)) || selected.has(snapshot.provider))
     .sort(compareAccountSnapshots);
 }
@@ -102,7 +98,7 @@ function AccountSnapshotBlock({
       {meters.length > 0 ? (
         <AccountMeters meters={meters} status={snapshot.status} variant={variant} />
       ) : (
-        <div className="truncate text-[10px] font-medium text-slate-400">{snapshot.message || snapshot.errors?.[0]?.message || t("Unavailable")}</div>
+        <div className="truncate text-[10px] font-medium text-slate-400">{t(snapshot.message || snapshot.errors?.[0]?.message || "Unavailable")}</div>
       )}
     </div>
   );

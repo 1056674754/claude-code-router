@@ -766,7 +766,9 @@ export function createProviderDraft(providers: GatewayProviderConfig[]): AddProv
 export function createProviderDraftFromProvider(provider: GatewayProviderConfig): AddProviderDraft {
   const baseUrl = providerBaseUrl(provider);
   const preset = findProviderPresetByBaseUrl(baseUrl);
-  const accountDraft = createProviderAccountDraftFromConfig(provider.account);
+  // Seed from the preset-backed account when the provider has none, so the
+  // dialog reflects the runtime inheritance instead of pinning an opt-out on save.
+  const accountDraft = createProviderAccountDraftFromConfig(provider.account ?? defaultProviderAccountConfigForBaseUrl(baseUrl));
   const protocol = toProviderProtocol(provider.type) ?? toProviderProtocol(provider.provider) ?? "openai_chat_completions";
   const credentials = (provider.credentials ?? []).map(providerCredentialDraftFromConfig);
   return {
@@ -1090,7 +1092,12 @@ function numberDraftString(value: unknown): string {
 export function parseProviderAccountDraft(draft: AddProviderDraft): GatewayProviderConfig["account"] | string | undefined {
   const refreshIntervalMs = positiveInteger(draft.accountRefreshIntervalMs);
   if (!draft.accountEnabled) {
-    return undefined;
+    // Persist the opt-out explicitly: an absent account config now inherits the
+    // preset account at runtime, so "disabled" must be distinguishable.
+    return {
+      connectors: cloneProviderAccountConnectors(standardProviderAccountConfig.connectors ?? []),
+      enabled: false
+    };
   }
 
   if (draft.accountMode === "standard") {
@@ -1625,14 +1632,6 @@ export function cloneProviderAccountConfig(account: ProviderAccountConfig | unde
 
 export function cloneProviderAccountConnectors(connectors: ProviderAccountConnectorConfig[]): ProviderAccountConnectorConfig[] {
   return JSON.parse(JSON.stringify(connectors)) as ProviderAccountConnectorConfig[];
-}
-
-export function defaultProviderAccountConfigForPreset(presetId: string | undefined): ProviderAccountConfig | undefined {
-  if (presetId === "kimi-coding") {
-    return cloneProviderAccountConfig(findProviderPreset(presetId)?.account ?? defaultProviderAccountConfig);
-  }
-  // Keep the advanced settings default on the standard endpoint; main resolves preset-specific connectors at runtime.
-  return cloneProviderAccountConfig(defaultProviderAccountConfig);
 }
 
 export function defaultProviderAccountConfigForBaseUrl(baseUrl: string): ProviderAccountConfig | undefined {
