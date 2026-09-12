@@ -33,7 +33,7 @@ export  {
   LoaderCircle, Power, RefreshCw, appLogoUrl, trayCyanIconUrl, trayOrangeIconUrl, trayVioletIconUrl, DEFAULT_TRAY_COMPONENT_VARIANTS, DEFAULT_TRAY_WIDGETS, DEFAULT_TRAY_WINDOW_MODULES, TRAY_SINGLETON_WIDGET_TYPES, TRAY_TOP_WIDGET_TYPES, TRAY_WINDOW_MODULE_IDS
 };
 export type {
-  ReactNode, AppConfig, ProviderAccountMeter, ProviderAccountSnapshot, TrayBalanceProgressConfig, TrayComponentVariants, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow,
+  ReactNode, AppConfig, GatewayProviderConfig, ProviderAccountMeter, ProviderAccountSnapshot, TrayBalanceProgressConfig, TrayComponentVariants, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow,
   UsageStatsFilter, UsageStatsRange, UsageStatsSnapshot, UsageTotals
 };
 

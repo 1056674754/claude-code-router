@@ -1,6 +1,6 @@
 import {
   AppConfig, applyTrayThemePreference, createSourceTabs, DEFAULT_TRAY_WIDGETS, defaultTrayWidgetVariant, emptySnapshots, formatCompactNumber, formatProviderName,
-  formatPercent, formatUpdated, formatUsdCost, normalizeTrayWidgets, ProviderAccountSnapshot, rangeLabel,
+  formatPercent, formatUpdated, formatUsdCost, GatewayProviderConfig, normalizeTrayWidgets, ProviderAccountSnapshot, rangeLabel,
   SnapshotMap, SourceTab, TrayComponentVariants, TrayWidgetConfig, UsageComparisonRow, UsageStatsRange, UsageTotals, useCallback, useEffect,
   useMemo, useRef, useState, useTrayErrorText, useTrayText, useTrayThemePreference
 } from "./shared";
@@ -18,11 +18,18 @@ const traySnapshotCacheKey = "ccr.tray.snapshot.v1";
 
 type CachedTraySnapshot = {
   accounts?: ProviderAccountSnapshot[];
-  configuredProviders?: AppConfig["Providers"];
+  configuredProviders?: Array<GatewayProviderConfig>;
+  selectedProvider?: string;
   snapshots?: SnapshotMap;
   theme?: AppConfig["theme"];
   trayWidgets?: TrayWidgetConfig[];
 };
+
+// Never persist whole GatewayProviderConfig objects here — they carry API
+// keys and credentials. Tabs only render name + icon, so cache exactly that.
+function toCachedProvider(provider: GatewayProviderConfig): GatewayProviderConfig {
+  return { icon: provider.icon, models: [], name: provider.name } as GatewayProviderConfig;
+}
 
 function hydrateCachedTraySnapshot(): CachedTraySnapshot | undefined {
   try {
@@ -55,7 +62,7 @@ export function TrayApp() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(Boolean(cachedTraySnapshot));
-  const [selectedProvider, setSelectedProvider] = useState<string>();
+  const [selectedProvider, setSelectedProvider] = useState<string | undefined>(cachedTraySnapshot?.selectedProvider);
   const [snapshots, setSnapshots] = useState<SnapshotMap>(cachedTraySnapshot?.snapshots ?? emptySnapshots);
   const [accountSnapshots, setAccountSnapshots] = useState<ProviderAccountSnapshot[]>(cachedTraySnapshot?.accounts ?? []);
   const [accountRefreshing, setAccountRefreshing] = useState(false);
@@ -91,7 +98,8 @@ export function TrayApp() {
       try {
         localStorage.setItem(traySnapshotCacheKey, JSON.stringify({
           accounts: payload.accounts,
-          configuredProviders,
+          configuredProviders: configuredProviders.map(toCachedProvider),
+          selectedProvider,
           snapshots: payload.snapshots,
           theme: payload.config.theme,
           trayWidgets

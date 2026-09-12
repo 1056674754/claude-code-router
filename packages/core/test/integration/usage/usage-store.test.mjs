@@ -808,3 +808,45 @@ test("UsageStore repairs mispriced and unpriced historical events from the upstr
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("UsageStore rollup path keeps totals, shares, and window edges consistent", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-rollup-consistency-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    const now = new Date();
+    const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+    for (const [createdAt, requestId, tokens] of [
+      [now, "req-rollup-now", 7],
+      [threeDaysAgo, "req-rollup-mid", 11],
+      [eightDaysAgo, "req-rollup-old", 500]
+    ]) {
+      await store.record({
+        createdAt: createdAt.toISOString(),
+        durationMs: 12,
+        method: "POST",
+        model: "rollup-model",
+        path: "/v1/messages",
+        provider: "alpha",
+        requestId,
+        statusCode: requestId === "req-rollup-now" ? 500 : 200,
+        usage: { inputTokens: tokens, outputTokens: 1 }
+      });
+    }
+
+    const stats = await store.getStats("7d", { includeProxy: true });
+    const seriesTotal = stats.series.reduce((sum, point) => sum + point.requestCount, 0);
+    assert.equal(stats.totals.requestCount, seriesTotal);
+    assert.equal(stats.totals.requestCount, 2);
+    assert.equal(stats.totals.errorCount, 1);
+
+    const model = stats.models.find((row) => row.model === "rollup-model");
+    assert.ok(model);
+    assert.equal(model.maxShare, 1);
+    assert.ok(stats.providerModels.every((row) => row.maxShare > 0));
+    assert.ok(stats.clientModels.every((row) => row.maxShare > 0));
+    assert.ok(stats.recentRequests.every((row) => row.model === "rollup-model"));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
