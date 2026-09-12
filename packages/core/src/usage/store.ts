@@ -443,10 +443,22 @@ export class UsageStore {
       `SELECT day_key, hour_bucket, ${usageRollupTotalsSelect} FROM usage_rollups WHERE ${where.where} GROUP BY day_key, hour_bucket`,
       where.params
     );
-    const totalsByBucket = new Map(seriesRows.map((row) => [
-      rollupBucketKey(String(row.day_key ?? ""), normalizeCount(row.hour_bucket), range),
-      usageTotalsFromRow(row)
-    ]));
+    // Several rollup rows (one per hour) fold into the same series bucket for
+    // day- and 5-hour-granularity ranges, so rows must be summed — a Map keyed
+    // by bucket would silently keep only the last hour and understate the card.
+    const rowsByBucket = new Map<string, Record<string, SqlValue>>();
+    for (const row of seriesRows) {
+      const key = rollupBucketKey(String(row.day_key ?? ""), normalizeCount(row.hour_bucket), range);
+      const merged = rowsByBucket.get(key);
+      if (!merged) {
+        rowsByBucket.set(key, { ...row });
+        continue;
+      }
+      for (const field of usageRollupSumRowFields) {
+        merged[field] = normalizeCount(merged[field]) + normalizeCount(row[field]);
+      }
+      merged.cost_usd = normalizeCost(merged.cost_usd) + normalizeCost(row.cost_usd);
+    }
     const [dayPart, hourPart] = firstBucket.key.split(" ");
     const [year, month, day] = dayPart.split("-").map(Number);
     // The whole snapshot reads at bucket granularity: totals, groups, and
@@ -465,7 +477,7 @@ export class UsageStore {
       range,
       recentRequests: readRecentRequestRows(database, buildUsageWhereClause(windowSince, filter)),
       series: buckets.map(({ key, label }) => ({
-        ...(totalsByBucket.get(key) ?? { ...emptyTotals }),
+        ...usageTotalsFromRow(rowsByBucket.get(key)),
         bucket: key,
         label
       })),
@@ -1040,6 +1052,18 @@ const usageRollupTotalsSelect = `
       COALESCE(SUM(duration_ms), 0) AS duration_ms,
       COALESCE(SUM(success_count), 0) AS success_count
 `;
+
+const usageRollupSumRowFields = [
+  "request_count",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "computed_total_tokens",
+  "prompt_tokens",
+  "duration_ms",
+  "success_count"
+] as const;
 
 function rollupBucketKey(dayKey: string, hourBucket: number, range: UsageStatsRange): string {
   if (range === "today" || range === "24h") {

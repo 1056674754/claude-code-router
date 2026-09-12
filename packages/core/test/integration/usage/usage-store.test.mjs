@@ -157,6 +157,47 @@ test("UsageStore buckets the 7d range into aligned 5-hour windows", async () => 
   }
 });
 
+test("UsageStore sums every rollup row into coarser series buckets", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-series-sum-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    const now = Date.now();
+    // Four events across the last six hours: some pairs always land in the
+    // same local day (30d/180d buckets) and the same 5-hour window (7d), so
+    // each granularity must aggregate multiple rollup rows per bucket.
+    const offsetsHours = [6, 3, 25 / 60, 10 / 60];
+    let index = 0;
+    for (const hoursAgo of offsetsHours) {
+      await store.record({
+        createdAt: new Date(now - hoursAgo * 60 * 60 * 1000).toISOString(),
+        durationMs: 10,
+        method: "POST",
+        model: "series-sum",
+        path: "/v1/messages",
+        provider: "alpha",
+        requestId: `req-series-sum-${index}`,
+        statusCode: 200,
+        usage: { inputTokens: 100, outputTokens: 10 }
+      });
+      index += 1;
+    }
+
+    for (const range of ["7d", "30d", "180d"]) {
+      const stats = await store.getStats(range, { includeProxy: true });
+      assert.equal(stats.totals.totalTokens, 440, `${range} totals`);
+      assert.equal(
+        stats.series.reduce((sum, point) => sum + point.totalTokens, 0),
+        440,
+        `${range} series must add up to totals`
+      );
+      const requests = stats.series.reduce((sum, point) => sum + point.requestCount, 0);
+      assert.equal(requests, 4, `${range} series request counts`);
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("UsageStore aggregates stats in SQLite without loading all events", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
   try {
