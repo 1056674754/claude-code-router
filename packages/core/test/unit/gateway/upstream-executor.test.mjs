@@ -603,3 +603,155 @@ test("openai_chat targets receive anthropic image blocks as data-url image_url p
   assert.deepEqual(content?.[1], { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } });
   assert.deepEqual(content?.[2], { type: "image_url", image_url: { url: "https://example.com/cat.png" } });
 });
+
+test("tool blocks are flattened for openai_chat targets and tool_result images survive", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body: {
+      messages: [
+        {
+          content: [
+            { input: { path: "/tmp/a.png" }, id: "call_01", name: "screenshot", type: "tool_use" }
+          ],
+          role: "assistant"
+        },
+        {
+          content: [
+            {
+              content: [
+                { source: { data: "QUJD", media_type: "image/jpeg", type: "base64" }, type: "image" }
+              ],
+              tool_use_id: "call_01",
+              type: "tool_result"
+            }
+          ],
+          role: "user"
+        },
+        {
+          content: "continue",
+          role: "user",
+          type: "text"
+        }
+      ],
+      model: "Ctyun/deepseek-v4.1-flash",
+      max_tokens: 8
+    },
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages[0]?.role, "assistant");
+  assert.equal(messages[0]?.content?.[0]?.type, "text");
+  assert.match(messages[0]?.content?.[0]?.text, /\[tool call: screenshot\(/);
+  assert.equal(messages[1]?.role, "user");
+  const parts = messages[1]?.content ?? [];
+  assert.equal(parts[0]?.type, "text");
+  assert.match(parts[0]?.text, /\[tool result for call_01\]/);
+  assert.equal(parts[1]?.type, "image_url");
+  assert.equal(parts[1]?.image_url?.url, "data:image/jpeg;base64,QUJD");
+  assert.equal(messages[2]?.role, "user");
+  assert.equal(messages[2]?.content, "continue");
+});
+
+test("string tool_result content survives the openai_chat flatten", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body: {
+      messages: [
+        {
+          content: "先跑一下测试",
+          role: "assistant"
+        },
+        {
+          content: [
+            {
+              content: "PASS 12 FAIL 0",
+              tool_use_id: "call_str",
+              type: "tool_result"
+            }
+          ],
+          role: "user"
+        },
+        {
+          content: "测试结果如何？",
+          role: "user"
+        }
+      ],
+      model: "Ctyun/deepseek-v4.1-flash",
+      max_tokens: 8
+    },
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages.length, 3);
+  assert.match(messages[1]?.content?.[0]?.text, /\[tool result for call_str\] PASS 12 FAIL 0/);
+});
+
+test("openai_chat bodies without tool or image blocks are returned unchanged", () => {
+  const config = {
+    Providers: [
+      {
+        api_base_url: "https://ai.ctaigw.cn/v1",
+        api_key: "test-key",
+        models: ["deepseek-v4.1-flash"],
+        name: "Ctyun",
+        type: "openai_chat_completions"
+      }
+    ],
+    Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+    virtualModelProfiles: []
+  };
+  const body = {
+    messages: [
+      { content: "just text", role: "user" }
+    ],
+    model: "Ctyun/deepseek-v4.1-flash",
+    max_tokens: 8
+  };
+
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body,
+    config,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  assert.deepEqual(result.body?.messages, body.messages);
+});
