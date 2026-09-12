@@ -135,6 +135,9 @@ export class UsageStore {
   private initPromise?: Promise<SqlDatabase>;
   private readonly requestLogDbFile?: string;
   private requestLogBackfillFailureLogged = false;
+  private rollupsAllDirty = false;
+  private lastBackfillAtMs = 0;
+  private backfillPendingSince?: Date;
   private usageCostRepair?: Promise<void>;
 
   constructor(private readonly dbFile: string, options: UsageStoreOptions = {}) {
@@ -292,8 +295,15 @@ export class UsageStore {
     const now = new Date();
     const normalizedRange = normalizeUsageRange(range);
     const since = getRangeSince(normalizedRange, now);
-    this.backfillFromRequestLogs(database, since);
+    this.throttledBackfillFromRequestLogs(database, since);
     this.scheduleUsageCostRepair();
+    const normalizedFilter = normalizeUsageFilter(filter);
+    if (!normalizedFilter.credential) {
+      const rollupSnapshot = this.readStatsFromRollups(database, normalizedRange, now, normalizedFilter);
+      if (rollupSnapshot) {
+        return rollupSnapshot;
+      }
+    }
     const query = buildUsageWhereClause(since, filter);
 
     return {
@@ -308,9 +318,124 @@ export class UsageStore {
     };
   }
 
+  // Every getStats call used to attach the (multi-GB) request-log database and
+  // scan it; a single panel refresh issued that six times. One pass per cycle
+  // is enough — overlapping calls widen the pending window instead of re-scanning.
+  private throttledBackfillFromRequestLogs(database: SqlDatabase, since: Date): void {
+    const nowMs = Date.now();
+    if (nowMs - this.lastBackfillAtMs < usageBackfillMinIntervalMs) {
+      this.backfillPendingSince = !this.backfillPendingSince || since < this.backfillPendingSince ? since : this.backfillPendingSince;
+      return;
+    }
+    this.lastBackfillAtMs = nowMs;
+    const pendingSince = this.backfillPendingSince;
+    this.backfillPendingSince = undefined;
+    this.backfillFromRequestLogs(database, pendingSince && pendingSince < since ? pendingSince : since);
+  }
+
+  // usage_events is the raw fact table; usage_rollups mirrors it aggregated by
+  // local day+hour and routing dimensions. Days are recomputed lazily from an
+  // event-id watermark, so queries touch only buckets that actually changed.
+  private ensureRollupsFresh(database: SqlDatabase): void {
+    const maxId = normalizeCount(queryRows(database, "SELECT COALESCE(MAX(id), 0) AS max_id FROM usage_events")[0]?.max_id);
+    const watermark = normalizeCount(queryRows(database, "SELECT value FROM usage_rollup_meta WHERE key = 'watermark'")[0]?.value);
+    const dirtyAll = this.rollupsAllDirty;
+    if (maxId === watermark && !dirtyAll) {
+      return;
+    }
+    const dayRows = dirtyAll
+      ? queryRows(database, "SELECT DISTINCT strftime('%Y-%m-%d', created_at, 'localtime') AS day_key FROM usage_events")
+      : queryRows(database, "SELECT DISTINCT strftime('%Y-%m-%d', created_at, 'localtime') AS day_key FROM usage_events WHERE id > ?", [watermark]);
+    for (const dayKey of dayRows.map((row) => String(row.day_key ?? "")).filter(Boolean)) {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.prepare("DELETE FROM usage_rollups WHERE day_key = ?").run(dayKey);
+        database.prepare(`
+          INSERT INTO usage_rollups
+          SELECT
+            strftime('%Y-%m-%d', created_at, 'localtime'),
+            CAST(strftime('%H', created_at, 'localtime') AS INTEGER),
+            provider,
+            model,
+            client,
+            COALESCE(credential_id, ''),
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_write_tokens), 0),
+            COALESCE(SUM(CASE
+              WHEN total_tokens > input_tokens + output_tokens + cache_read_tokens + cache_write_tokens THEN total_tokens
+              ELSE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+            END), 0),
+            COALESCE(SUM(CASE
+              WHEN total_tokens - output_tokens > input_tokens + cache_read_tokens + cache_write_tokens THEN total_tokens - output_tokens
+              ELSE input_tokens + cache_read_tokens + cache_write_tokens
+            END), 0),
+            COALESCE(SUM(duration_ms), 0),
+            COALESCE(SUM(COALESCE(cost_usd, 0)), 0)
+          FROM usage_events
+          WHERE strftime('%Y-%m-%d', created_at, 'localtime') = ?
+          GROUP BY day_key, hour_bucket, provider, model, client, credential_id
+        `).run(dayKey);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    database.prepare(`
+      INSERT INTO usage_rollup_meta (key, value) VALUES ('watermark', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(maxId));
+    this.rollupsAllDirty = false;
+  }
+
+  private readStatsFromRollups(database: SqlDatabase, range: UsageStatsRange, now: Date, filter: UsageStatsFilter): UsageStatsSnapshot | undefined {
+    const buckets = buildBuckets(range, now);
+    const firstBucket = buckets[0];
+    if (!firstBucket) {
+      return undefined;
+    }
+    try {
+      this.ensureRollupsFresh(database);
+    } catch (error) {
+      console.warn(`[usage] Failed to refresh usage rollups: ${formatError(error)}`);
+      return undefined;
+    }
+
+    const where = buildRollupWindowClause(firstBucket.key, filter);
+    const totalsRow = queryRows(database, `SELECT ${usageRollupTotalsSelect} FROM usage_rollups WHERE ${where.where}`, where.params)[0];
+    const seriesRows = queryRows(
+      database,
+      `SELECT day_key, hour_bucket, ${usageRollupTotalsSelect} FROM usage_rollups WHERE ${where.where} GROUP BY day_key, hour_bucket`,
+      where.params
+    );
+    const totalsByBucket = new Map(seriesRows.map((row) => [
+      rollupBucketKey(String(row.day_key ?? ""), normalizeCount(row.hour_bucket), range),
+      usageTotalsFromRow(row)
+    ]));
+
+    return {
+      clientModels: readRollupGroupRows(database, where, "client, provider, credential_id, model", "client, provider, credential_id, model", 25).map(mapClientModelGroupRow),
+      generatedAt: now.toISOString(),
+      models: readRollupGroupRows(database, where, "provider, model, MAX(credential_id) AS credential_id", "provider, model", 8).map(mapModelGroupRow),
+      providerModels: readRollupGroupRows(database, where, "provider, credential_id, model", "provider, credential_id, model", 25).map(mapProviderModelGroupRow),
+      range,
+      recentRequests: readRecentRequestRows(database, buildUsageWhereClause(getRangeSince(range, now), filter)),
+      series: buckets.map(({ key, label }) => ({
+        ...(totalsByBucket.get(key) ?? { ...emptyTotals }),
+        bucket: key,
+        label
+      })),
+      totals: usageTotalsFromRow(totalsRow)
+    };
+  }
+
   async getTotalsSince(since: Date, filter: UsageStatsFilter | null | undefined = {}, options: UsageStatsQueryOptions | null | undefined = {}): Promise<UsageTotals> {
     const database = await this.getDatabase();
-    this.backfillFromRequestLogs(database, since);
+    this.throttledBackfillFromRequestLogs(database, since);
     this.scheduleUsageCostRepair();
     return readUsageTotals(database, buildUsageWhereClause(since, filter, options));
   }
@@ -335,6 +460,7 @@ export class UsageStore {
     const database = await this.getDatabase();
     const pageSize = 500;
     let cursor = 0;
+    let repairedAny = false;
     for (let page = 0; page < 200; page += 1) {
       const rows = queryRows(database, `
         SELECT
@@ -387,9 +513,15 @@ export class UsageStore {
             continue;
           }
           update.run(cost.amountUsd, cost.source, normalizeCount(row.id));
+          repairedAny = true;
         }
       })();
       if (rows.length < pageSize) {
+        if (repairedAny) {
+          // Repairs rewrite cost columns in place; the rollup watermark cannot
+          // see them, so force the aggregate days to be rebuilt.
+          this.rollupsAllDirty = true;
+        }
         return;
       }
     }
@@ -435,6 +567,29 @@ export class UsageStore {
       CREATE INDEX IF NOT EXISTS usage_events_model_idx ON usage_events(model);
       CREATE INDEX IF NOT EXISTS usage_events_path_idx ON usage_events(path);
       CREATE INDEX IF NOT EXISTS usage_events_request_id_idx ON usage_events(request_id);
+      CREATE TABLE IF NOT EXISTS usage_rollups (
+        day_key TEXT NOT NULL,
+        hour_bucket INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        client TEXT NOT NULL DEFAULT '',
+        credential_id TEXT NOT NULL DEFAULT '',
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_key, hour_bucket, provider, model, client, credential_id)
+      );
+      CREATE TABLE IF NOT EXISTS usage_rollup_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
     ensureUsageSchema(database);
 
@@ -757,6 +912,60 @@ const usageTotalsSelect = `
             END), 0) AS prompt_tokens
 `;
 
+const usageBackfillMinIntervalMs = 1500;
+
+const usageRollupTotalsSelect = `
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+      COALESCE(SUM(computed_total_tokens), 0) AS computed_total_tokens,
+      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+      COALESCE(SUM(cost_usd), 0) AS cost_usd,
+      COALESCE(SUM(duration_ms), 0) AS duration_ms,
+      COALESCE(SUM(success_count), 0) AS success_count
+`;
+
+function rollupBucketKey(dayKey: string, hourBucket: number, range: UsageStatsRange): string {
+  if (range === "today" || range === "24h") {
+    return `${dayKey} ${String(hourBucket).padStart(2, "0")}:00`;
+  }
+  if (range === "7d") {
+    return `${dayKey} ${String(Math.floor(hourBucket / 5) * 5).padStart(2, "0")}:00`;
+  }
+  return dayKey;
+}
+
+function buildRollupWindowClause(firstBucketKey: string, filter: UsageStatsFilter): UsageWhereClause {
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  const separator = firstBucketKey.indexOf(" ");
+  if (separator > 0) {
+    const dayKey = firstBucketKey.slice(0, separator);
+    const hourBucket = Number(firstBucketKey.slice(separator + 1, separator + 3));
+    where.push("(day_key > ? OR (day_key = ? AND hour_bucket >= ?))");
+    params.push(dayKey, dayKey, hourBucket);
+  } else {
+    where.push("day_key >= ?");
+    params.push(firstBucketKey);
+  }
+  const provider = normalizeFilterValue(filter.provider);
+  if (provider) {
+    where.push("provider = ?");
+    params.push(provider);
+  } else if (filter.includeProxy !== true) {
+    where.push("provider <> ?");
+    params.push("proxy");
+  }
+  const model = normalizeFilterValue(filter.model);
+  if (model) {
+    where.push("model = ?");
+    params.push(model);
+  }
+  return { params, where: where.join(" AND ") };
+}
+
 function readUsageTotals(database: SqlDatabase, query: UsageWhereClause): UsageTotals {
   const row = queryRows(
     database,
@@ -804,14 +1013,8 @@ function readUsageSeries(
   }));
 }
 
-function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageComparisonRow[] {
-  const rows = readUsageGroupRows(
-    database,
-    query,
-    "provider, model",
-    "provider, model, MAX(credential_id) AS credential_id",
-    8
-  ).map((row) => ({
+function mapModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  return {
     ...usageTotalsFromRow(row),
     caption: normalizeLabel(String(row.provider ?? ""), "unknown"),
     credentialId: normalizeFilterValue(String(row.credential_id ?? "")),
@@ -820,7 +1023,51 @@ function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageCom
     maxShare: 0,
     model: normalizeLabel(String(row.model ?? ""), "unknown"),
     provider: normalizeLabel(String(row.provider ?? ""), "unknown")
-  }));
+  };
+}
+
+function mapClientModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  const client = normalizeLabel(String(row.client ?? ""), "unknown");
+  const model = normalizeLabel(String(row.model ?? ""), "unknown");
+  const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
+  const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
+  return {
+    ...usageTotalsFromRow(row),
+    caption: credentialId ? `${provider} / ${credentialId} / ${model}` : `${provider} / ${model}`,
+    client,
+    credentialId: credentialId || undefined,
+    key: `${client}::${provider}::${credentialId}::${model}`,
+    label: client,
+    maxShare: 0,
+    model,
+    provider
+  };
+}
+
+function mapProviderModelGroupRow(row: Record<string, SqlValue>): UsageComparisonRow {
+  const model = normalizeLabel(String(row.model ?? ""), "unknown");
+  const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
+  const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
+  return {
+    ...usageTotalsFromRow(row),
+    caption: credentialId ? `${credentialId} / ${model}` : model,
+    credentialId: credentialId || undefined,
+    key: `${provider}::${credentialId}::${model}`,
+    label: provider,
+    maxShare: 0,
+    model,
+    provider
+  };
+}
+
+function readModelRows(database: SqlDatabase, query: UsageWhereClause): UsageComparisonRow[] {
+  const rows = readUsageGroupRows(
+    database,
+    query,
+    "provider, model",
+    "provider, model, MAX(credential_id) AS credential_id",
+    8
+  ).map(mapModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
 }
 
@@ -831,23 +1078,7 @@ function readClientModelRows(database: SqlDatabase, query: UsageWhereClause): Us
     "client, provider, credential_id, model",
     "client, provider, credential_id, model",
     25
-  ).map((row) => {
-    const client = normalizeLabel(String(row.client ?? ""), "unknown");
-    const model = normalizeLabel(String(row.model ?? ""), "unknown");
-    const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
-    const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
-    return {
-      ...usageTotalsFromRow(row),
-      caption: credentialId ? `${provider} / ${credentialId} / ${model}` : `${provider} / ${model}`,
-      client,
-      credentialId: credentialId || undefined,
-      key: `${client}::${provider}::${credentialId}::${model}`,
-      label: client,
-      maxShare: 0,
-      model,
-      provider
-    };
-  });
+  ).map(mapClientModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
 }
 
@@ -858,22 +1089,31 @@ function readProviderModelRows(database: SqlDatabase, query: UsageWhereClause): 
     "provider, credential_id, model",
     "provider, credential_id, model",
     25
-  ).map((row) => {
-    const model = normalizeLabel(String(row.model ?? ""), "unknown");
-    const provider = normalizeLabel(String(row.provider ?? ""), "unknown");
-    const credentialId = normalizeFilterValue(String(row.credential_id ?? "")) ?? "";
-    return {
-      ...usageTotalsFromRow(row),
-      caption: credentialId ? `${credentialId} / ${model}` : model,
-      credentialId: credentialId || undefined,
-      key: `${provider}::${credentialId}::${model}`,
-      label: provider,
-      maxShare: 0,
-      model,
-      provider
-    };
-  });
+  ).map(mapProviderModelGroupRow);
   return applyMaxShare(rows, (row) => row.totalTokens || row.requestCount);
+}
+
+function readRollupGroupRows(
+  database: SqlDatabase,
+  where: UsageWhereClause,
+  selectColumns: string,
+  groupBy: string,
+  limit: number
+): Record<string, SqlValue>[] {
+  return queryRows(
+    database,
+    `
+      SELECT
+        ${selectColumns},
+        ${usageRollupTotalsSelect}
+      FROM usage_rollups
+      WHERE ${where.where}
+      GROUP BY ${groupBy}
+      ORDER BY computed_total_tokens DESC, request_count DESC
+      LIMIT ?
+    `,
+    [...where.params, limit]
+  );
 }
 
 function readUsageGroupRows(

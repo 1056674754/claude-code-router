@@ -81,6 +81,7 @@ import type {
   RouteScriptTestResult,
   RouteScriptValidationRequest,
   RouteScriptValidationResult,
+  TrayUsageSnapshotPayload,
   UsageStatsFilter,
   UsageStatsRange,
   UsageStatsSnapshot
@@ -126,6 +127,7 @@ declare global {
       getRequestLogs: (filter?: RequestLogListFilter) => Promise<RequestLogPage>;
       getUpdateStatus: () => Promise<AppUpdateStatus>;
       getUsageStats: (range?: UsageStatsRange, filter?: UsageStatsFilter) => Promise<UsageStatsSnapshot>;
+      getTraySnapshot: (provider?: string) => Promise<TrayUsageSnapshotPayload>;
       installProxyCertificate: () => Promise<ProxyCertificateInstallResult>;
       importLocalAgentProvider: (request: LocalAgentProviderImportRequest) => Promise<LocalAgentProviderImportResult>;
       listMcpServerTools: (serverName: string) => Promise<GatewayMcpToolInfo[]>;

@@ -130,6 +130,25 @@ ipcMain.handle(IPC_CHANNELS.appGetRequestLogBodyChunk, (_event, request) => getR
 ipcMain.handle(IPC_CHANNELS.appGetRequestLogs, (_event, filter?: RequestLogListFilter) => getRequestLogs(filter));
 ipcMain.handle(IPC_CHANNELS.appGetUpdateStatus, () => appUpdateService.getStatus());
 ipcMain.handle(IPC_CHANNELS.appGetUsageStats, (_event, range?: UsageStatsRange, filter?: UsageStatsFilter) => getUsageStats(range, filter));
+ipcMain.handle(IPC_CHANNELS.appGetTraySnapshot, async (_event, provider?: string) => {
+  const filter: UsageStatsFilter = typeof provider === "string" && provider.trim() ? { provider } : { includeProxy: true };
+  const [today, day, week, month, halfYear, allMonth, config, accounts] = await Promise.all([
+    getUsageStats("today", filter),
+    getUsageStats("24h", filter),
+    getUsageStats("7d", filter),
+    getUsageStats("30d", filter),
+    getUsageStats("180d", filter),
+    provider ? getUsageStats("30d", { includeProxy: true }) : Promise.resolve(undefined),
+    loadAppConfig(),
+    getProviderAccountSnapshots(provider)
+  ]);
+  return {
+    accounts,
+    ...(allMonth ? { allMonth } : {}),
+    config,
+    snapshots: { "180d": halfYear, "24h": day, "30d": month, "7d": week, today }
+  };
+});
 ipcMain.handle(IPC_CHANNELS.appFetchProviderManifest, (_event, request: ProviderManifestFetchRequest) => fetchProviderManifest(request));
 ipcMain.handle(IPC_CHANNELS.appImportLocalAgentProvider, (_event, request: LocalAgentProviderImportRequest) => importLocalAgentProvider(request));
 ipcMain.handle(IPC_CHANNELS.appProbeLocalAgentProvider, (_event, request) => probeLocalAgentProvider(request));

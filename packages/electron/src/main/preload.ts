@@ -82,6 +82,7 @@ import type {
   RouteScriptTestResult,
   RouteScriptValidationRequest,
   RouteScriptValidationResult,
+  TrayUsageSnapshotPayload,
   UsageStatsFilter,
   UsageStatsRange,
   UsageStatsSnapshot
@@ -138,6 +139,7 @@ contextBridge.exposeInMainWorld("ccr", {
   getRequestLogs: (filter?: RequestLogListFilter) => invoke(IPC_CHANNELS.appGetRequestLogs, filter) as Promise<RequestLogPage>,
   getUpdateStatus: () => invoke(IPC_CHANNELS.appGetUpdateStatus) as Promise<AppUpdateStatus>,
   getUsageStats: (range?: UsageStatsRange, filter?: UsageStatsFilter) => invoke(IPC_CHANNELS.appGetUsageStats, range, filter) as Promise<UsageStatsSnapshot>,
+  getTraySnapshot: (provider?: string) => invoke(IPC_CHANNELS.appGetTraySnapshot, provider) as Promise<TrayUsageSnapshotPayload>,
   installProxyCertificate: () => invoke(IPC_CHANNELS.appInstallProxyCertificate) as Promise<ProxyCertificateInstallResult>,
   importLocalAgentProvider: (request: LocalAgentProviderImportRequest) => invoke(IPC_CHANNELS.appImportLocalAgentProvider, request) as Promise<LocalAgentProviderImportResult>,
   listMcpServerTools: (serverName: string) => invoke(IPC_CHANNELS.appListMcpServerTools, serverName) as Promise<GatewayMcpToolInfo[]>,

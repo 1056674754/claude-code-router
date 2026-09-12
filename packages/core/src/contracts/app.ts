@@ -2230,6 +2230,13 @@ export type RequestLogPage = {
 
 export type UsageStatsRange = "today" | "24h" | "7d" | "30d" | "180d";
 
+export type TrayUsageSnapshotPayload = {
+  accounts: ProviderAccountSnapshot[];
+  allMonth?: UsageStatsSnapshot;
+  config: AppConfig;
+  snapshots: Record<"180d" | "24h" | "30d" | "7d" | "today", UsageStatsSnapshot>;
+};
+
 export type UsageStatsFilter = {
   credential?: string;
   includeProxy?: boolean;

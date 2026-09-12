@@ -1,6 +1,6 @@
 import {
   applyTrayThemePreference, DEFAULT_TRAY_WIDGETS, emptySnapshots,
-  normalizeTrayWidgets, ProviderAccountSnapshot, SnapshotMap, TrayWidgetConfig, UsageStatsFilter,
+  normalizeTrayWidgets, ProviderAccountSnapshot, SnapshotMap, TrayWidgetConfig,
   UsageStatsRange, useCallback, useEffect, useState, useTrayErrorText, useTrayText, useTrayThemePreference
 } from "./shared";
 import {
@@ -13,6 +13,7 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
   useTrayThemePreference();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [range, setRange] = useState<UsageStatsRange>("30d");
   const [snapshots, setSnapshots] = useState<SnapshotMap>(emptySnapshots);
   const [accountSnapshots, setAccountSnapshots] = useState<ProviderAccountSnapshot[]>([]);
@@ -29,20 +30,12 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
     setLoading(true);
     setError("");
     try {
-      const filter: UsageStatsFilter = provider ? { provider } : { includeProxy: true };
-      const [today, day, week, month, halfYear, config, accounts] = await Promise.all([
-        window.ccr.getUsageStats("today", filter),
-        window.ccr.getUsageStats("24h", filter),
-        window.ccr.getUsageStats("7d", filter),
-        window.ccr.getUsageStats("30d", filter),
-        window.ccr.getUsageStats("180d", filter),
-        window.ccr.getConfig(),
-        window.ccr.getProviderAccountSnapshots(provider)
-      ]);
-      setSnapshots({ today, "24h": day, "7d": week, "30d": month, "180d": halfYear });
-      setAccountSnapshots(accounts);
-      setTrayWidgets(normalizeTrayWidgets(config.trayWidgets, config.trayWindowModules, config.trayComponentVariants));
-      applyTrayThemePreference(config.theme);
+      const payload = await window.ccr.getTraySnapshot(provider);
+      setSnapshots(payload.snapshots);
+      setAccountSnapshots(payload.accounts);
+      setTrayWidgets(normalizeTrayWidgets(payload.config.trayWidgets, payload.config.trayWindowModules, payload.config.trayComponentVariants));
+      applyTrayThemePreference(payload.config.theme);
+      setLoadedOnce(true);
     } catch (nextError) {
       setError(formatError(nextError));
     } finally {
@@ -117,13 +110,29 @@ export function TrayDetailApp({ provider }: { provider?: string }) {
     };
   }, [refresh]);
 
+  const showSkeleton = loading && !loadedOnce;
+
   return (
     <main
       className="tray-shell h-screen w-screen overflow-y-auto p-3"
     >
       <TrayStatusStrip totalTokens={snapshots[range].totals.totalTokens} />
-      <UsageDetailPanel activeStats={snapshots[range]} accountRefreshing={accountRefreshing} accountSnapshots={accountSnapshots} activitySeries={snapshots["180d"]?.series} provider={provider} range={range} widgets={trayWidgets} onRefreshAccount={refreshAccountSnapshots} onRangeChange={setRange} />
-      {loading ? <div className="mt-2 text-[11px] font-medium text-slate-300/55">{t("Syncing usage...")}</div> : null}
+      {showSkeleton ? (
+        <div className="space-y-2 pt-2">
+          <div className="tray-panel h-10 px-3 py-3">
+            <div className="h-full w-full animate-pulse rounded bg-white/10" />
+          </div>
+          <div className="tray-panel h-24 p-3">
+            <div className="h-full w-full animate-pulse rounded bg-white/10" />
+          </div>
+          <div className="tray-panel h-40 p-3">
+            <div className="h-full w-full animate-pulse rounded bg-white/10" />
+          </div>
+        </div>
+      ) : (
+        <UsageDetailPanel activeStats={snapshots[range]} accountRefreshing={accountRefreshing} accountSnapshots={accountSnapshots} activitySeries={snapshots["180d"]?.series} provider={provider} range={range} widgets={trayWidgets} onRefreshAccount={refreshAccountSnapshots} onRangeChange={setRange} />
+      )}
+      {loading && !showSkeleton ? <div className="mt-2 text-[11px] font-medium text-slate-300/55">{t("Syncing usage...")}</div> : null}
       {error ? <div className="mt-3 rounded-[12px] border border-rose-400/20 bg-rose-500/15 px-3 py-2 text-[12px] font-medium text-rose-100">{error}</div> : null}
     </main>
   );
