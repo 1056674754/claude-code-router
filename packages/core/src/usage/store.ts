@@ -339,7 +339,8 @@ export class UsageStore {
   private ensureRollupsFresh(database: SqlDatabase): void {
     const maxId = normalizeCount(queryRows(database, "SELECT COALESCE(MAX(id), 0) AS max_id FROM usage_events")[0]?.max_id);
     const watermark = normalizeCount(queryRows(database, "SELECT value FROM usage_rollup_meta WHERE key = 'watermark'")[0]?.value);
-    const dirtyAll = this.rollupsAllDirty;
+    const dirtyAll = this.rollupsAllDirty ||
+      this.rollupTimezoneMoved(database);
     if (maxId === watermark && !dirtyAll) {
       return;
     }
@@ -392,6 +393,28 @@ export class UsageStore {
     this.rollupsAllDirty = false;
   }
 
+  // day_key/hour_bucket are derived with the OS timezone at build time; when
+  // the machine moves zones the stored days no longer match localtime reads.
+  private rollupTimezoneMoved(database: SqlDatabase): boolean {
+    const currentOffset = String(new Date().getTimezoneOffset());
+    const stored = queryRows(database, "SELECT value FROM usage_rollup_meta WHERE key = 'tz_offset'")[0]?.value;
+    if (stored === undefined) {
+      database.prepare(`
+        INSERT INTO usage_rollup_meta (key, value) VALUES ('tz_offset', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(currentOffset);
+      return false;
+    }
+    if (String(stored) === currentOffset) {
+      return false;
+    }
+    database.prepare(`
+      INSERT INTO usage_rollup_meta (key, value) VALUES ('tz_offset', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(currentOffset);
+    return true;
+  }
+
   private readStatsFromRollups(database: SqlDatabase, range: UsageStatsRange, now: Date, filter: UsageStatsFilter): UsageStatsSnapshot | undefined {
     const buckets = buildBuckets(range, now);
     const firstBucket = buckets[0];
@@ -416,14 +439,23 @@ export class UsageStore {
       rollupBucketKey(String(row.day_key ?? ""), normalizeCount(row.hour_bucket), range),
       usageTotalsFromRow(row)
     ]));
+    const [dayPart, hourPart] = firstBucket.key.split(" ");
+    const [year, month, day] = dayPart.split("-").map(Number);
+    // The whole snapshot reads at bucket granularity: totals, groups, and
+    // recentRequests share the series window so the card stays internally
+    // consistent (totals === sum(series)).
+    const windowSince = hourPart
+      ? new Date(year, month - 1, day, Number(hourPart.slice(0, 2)))
+      : new Date(year, month - 1, day);
+    const rollupModels = readRollupGroupRows(database, where, "provider, model, MAX(credential_id) AS credential_id", "provider, model", 8).map(mapModelGroupRow);
 
     return {
-      clientModels: readRollupGroupRows(database, where, "client, provider, credential_id, model", "client, provider, credential_id, model", 25).map(mapClientModelGroupRow),
+      clientModels: applyMaxShare(readRollupGroupRows(database, where, "client, provider, credential_id, model", "client, provider, credential_id, model", 25).map(mapClientModelGroupRow), (row) => row.totalTokens || row.requestCount),
       generatedAt: now.toISOString(),
-      models: readRollupGroupRows(database, where, "provider, model, MAX(credential_id) AS credential_id", "provider, model", 8).map(mapModelGroupRow),
-      providerModels: readRollupGroupRows(database, where, "provider, credential_id, model", "provider, credential_id, model", 25).map(mapProviderModelGroupRow),
+      models: applyMaxShare(rollupModels, (row) => row.totalTokens || row.requestCount),
+      providerModels: applyMaxShare(readRollupGroupRows(database, where, "provider, credential_id, model", "provider, credential_id, model", 25).map(mapProviderModelGroupRow), (row) => row.totalTokens || row.requestCount),
       range,
-      recentRequests: readRecentRequestRows(database, buildUsageWhereClause(getRangeSince(range, now), filter)),
+      recentRequests: readRecentRequestRows(database, buildUsageWhereClause(windowSince, filter)),
       series: buckets.map(({ key, label }) => ({
         ...(totalsByBucket.get(key) ?? { ...emptyTotals }),
         bucket: key,
