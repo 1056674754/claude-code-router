@@ -38,7 +38,6 @@ class TrayController {
   private detailPopover?: BrowserWindow;
   private ignorePopoverBlurUntil = 0;
   private popover?: BrowserWindow;
-  private popoverFocusSeen = false;
   private randomTrayIconDateKey?: string;
   private resolvedRandomTrayIcon?: TrayMascotIconId;
   private refreshTimer?: NodeJS.Timeout;
@@ -188,7 +187,6 @@ class TrayController {
 
     popover.setBounds(menu, false);
     this.ignorePopoverBlurUntil = Date.now() + trayBlurIgnoreMs;
-    this.popoverFocusSeen = false;
     // Re-register the panel with the window server before ordering it front.
     // After being hidden on another Space (especially a fullscreen one), macOS
     // keeps the panel parked there and a plain makeKeyAndOrderFront would drag
@@ -197,33 +195,6 @@ class TrayController {
     popover.showInactive();
     popover.moveTop();
     popover.focus();
-    this.watchPopoverFocus();
-  }
-
-  // A blur landing inside the ignore window above is swallowed, so a panel
-  // that held and lost key focus would otherwise float open forever — close
-  // it. A panel that never got focus at all (slow key acquisition, e.g. over
-  // fullscreen Spaces) stays open: it is still clickable and the tray toggle
-  // dismisses it, which beats flashing the panel away on fullscreen.
-  private watchPopoverFocus(attempt = 0): void {
-    setTimeout(() => {
-      const popover = this.popover;
-      if (!popover || popover.isDestroyed() || !popover.isVisible()) {
-        return;
-      }
-      if (popover.isFocused()) {
-        return;
-      }
-      if (this.popoverFocusSeen) {
-        this.hidePopover();
-        return;
-      }
-      if (attempt < 1) {
-        popover.focus();
-        this.watchPopoverFocus(attempt + 1);
-        return;
-      }
-    }, attempt === 0 ? trayBlurIgnoreMs + 200 : 320);
   }
 
   private ensurePopover(): BrowserWindow {
@@ -267,9 +238,6 @@ class TrayController {
     // and screen-capture annotation overlays; "pop-up-menu" renders above them.
     this.popover.setAlwaysOnTop(true, "floating");
     this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    this.popover.on("focus", () => {
-      this.popoverFocusSeen = true;
-    });
     this.popover.on("blur", () => this.handlePopoverBlur());
     this.popover.on("closed", () => {
       this.popover = undefined;
