@@ -873,94 +873,19 @@ function usageAwareOpenAiChatAttemptBody(input: {
     return input.body;
   }
   const sanitizedBody = stripUnsupportedOpenAiRequestParameters(input.body);
+  // No body shim here. The bundled gateway runtime converts anthropic
+  // tool_use -> assistant `tool_calls` (with id/name/arguments), tool_result ->
+  // `role:"tool"` + `tool_call_id`, and image blocks -> openai `image_url`
+  // data URLs natively for openai_chat_completions targets (verified against
+  // the shipped runtime with a recording upstream). An earlier patch flattened
+  // tool blocks into text placeholders and rewrote images to `image_url`
+  // before forwarding, which broke tool calling on every Ctyun-routed request:
+  // the upstream then saw past tool calls as prose and imitated that text
+  // format, and the pre-converted image blocks were dropped by the converter.
   return providerProtocol === "openai_chat_completions"
-    ? usageAwareOpenAiChatBody(adaptAnthropicImageBlocksForOpenAiChat(sanitizedBody))
+    ? usageAwareOpenAiChatBody(sanitizedBody)
     : sanitizedBody;
 }
-
-// The bundled gateway runtime maps anthropic text but has no parser for
-// anthropic image blocks, so openai_chat targets silently lose images;
-// translate the image blocks to OpenAI data-url parts here. It also maps
-// anthropic tool_use/tool_result blocks incompletely (role:"tool" without a
-// preceding assistant "tool_calls" message), which strict OpenAI-compatible
-// upstreams reject — so tool blocks are flattened into plain text/image
-// content that every openai_chat target accepts.
-function adaptAnthropicImageBlocksForOpenAiChat(body: Buffer | undefined): Buffer | undefined {
-  const parsedBody = parseJsonObjectSafe(body);
-  if (!parsedBody || !Array.isArray(parsedBody.messages)) {
-    return body;
-  }
-  const flattened: unknown[] = [];
-  const pushUserContent = (parts: unknown[]) => {
-    const previous = flattened[flattened.length - 1];
-    if (isRecord(previous) && previous.role === "user" && Array.isArray(previous.content)) {
-      previous.content = [...previous.content, ...parts];
-      return;
-    }
-    flattened.push({ content: parts, role: "user" });
-  };
-  for (const message of parsedBody.messages) {
-    if (!isRecord(message) || !Array.isArray(message.content)) {
-      flattened.push(message);
-      continue;
-    }
-    if (message.role === "user") {
-      const parts: unknown[] = [];
-      for (const block of message.content) {
-        if (isRecord(block) && block.type === "tool_result") {
-          const toolUseId = stringValue(block.tool_use_id);
-          if (typeof block.content === "string" && block.content.trim()) {
-            parts.push({ text: `[tool result for ${toolUseId ?? "tool"}] ${block.content}`, type: "text" });
-            continue;
-          }
-          parts.push({ text: toolUseId ? `[tool result for ${toolUseId}]` : "[tool result]", type: "text" });
-          parts.push(...(Array.isArray(block.content) ? block.content : []).map(openAiChatImageBlockFromAnthropic));
-          continue;
-        }
-        parts.push(openAiChatImageBlockFromAnthropic(block));
-      }
-      pushUserContent(parts);
-      continue;
-    }
-    const content: unknown[] = [];
-    let hasToolUse = false;
-    for (const block of message.content) {
-      if (isRecord(block) && block.type === "tool_use") {
-        hasToolUse = true;
-        content.push({
-          text: `[tool call: ${stringValue(block.name) ?? "tool"}(${JSON.stringify(block.input ?? {}) || "{}"})]`,
-          type: "text"
-        });
-        continue;
-      }
-      content.push(openAiChatImageBlockFromAnthropic(block));
-    }
-    flattened.push(hasToolUse ? { ...message, content } : message);
-  }
-  const unchanged = flattened.length === (parsedBody.messages as unknown[]).length &&
-    flattened.every((message, index) => message === (parsedBody.messages as unknown[])[index]);
-  if (unchanged) {
-    return body;
-  }
-  return serializeJsonBody({ ...parsedBody, messages: flattened });
-}
-
-function openAiChatImageBlockFromAnthropic(block: unknown): unknown {
-  if (!isRecord(block)) {
-    return block;
-  }
-  if (block.type !== "image" || !isRecord(block.source)) {
-    return block;
-  }
-  if (block.source.type === "base64" && typeof block.source.media_type === "string" && typeof block.source.data === "string") {
-    return { type: "image_url", image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } };
-  }
-  if (block.source.type === "url" && typeof block.source.url === "string") {
-    return { type: "image_url", image_url: { url: block.source.url } };
-  }
-  return block;
-}
-
 
 function stripUnsupportedOpenAiRequestParameters(body: Buffer | undefined): Buffer | undefined {
   const parsedBody = parseJsonObjectSafe(body);

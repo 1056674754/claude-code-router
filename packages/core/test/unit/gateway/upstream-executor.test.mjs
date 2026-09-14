@@ -633,7 +633,7 @@ test("rate-limit hold surfaces the 429 once the wait budget is exhausted", async
   }
 });
 
-test("openai_chat targets receive anthropic image blocks as data-url image_url parts", () => {
+test("anthropic image blocks stay untouched for openai_chat targets", () => {
   const config = {
     Providers: [
       {
@@ -697,11 +697,13 @@ test("openai_chat targets receive anthropic image blocks as data-url image_url p
   assert.equal(attempt.credentialProtocol, "openai_chat_completions");
   const content = attempt.body?.messages?.[0]?.content;
   assert.equal(content?.[0]?.type, "text");
-  assert.deepEqual(content?.[1], { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } });
-  assert.deepEqual(content?.[2], { type: "image_url", image_url: { url: "https://example.com/cat.png" } });
+  // The shipped gateway runtime owns anthropic -> openai conversion, so the
+  // attempt body must carry the original anthropic blocks untouched.
+  assert.deepEqual(content?.[1], { source: { data: "aGVsbG8=", media_type: "image/png", type: "base64" }, type: "image" });
+  assert.deepEqual(content?.[2], { source: { type: "url", url: "https://example.com/cat.png" }, type: "image" });
 });
 
-test("tool blocks are flattened for openai_chat targets and tool_result images survive", () => {
+test("tool and image blocks reach openai_chat targets unconverted", () => {
   const config = {
     Providers: [
       {
@@ -755,19 +757,23 @@ test("tool blocks are flattened for openai_chat targets and tool_result images s
 
   const messages = result.body?.messages ?? [];
   assert.equal(messages[0]?.role, "assistant");
-  assert.equal(messages[0]?.content?.[0]?.type, "text");
-  assert.match(messages[0]?.content?.[0]?.text, /\[tool call: screenshot\(/);
+  assert.deepEqual(messages[0]?.content, [
+    { input: { path: "/tmp/a.png" }, id: "call_01", name: "screenshot", type: "tool_use" }
+  ]);
   assert.equal(messages[1]?.role, "user");
   const parts = messages[1]?.content ?? [];
-  assert.equal(parts[0]?.type, "text");
-  assert.match(parts[0]?.text, /\[tool result for call_01\]/);
-  assert.equal(parts[1]?.type, "image_url");
-  assert.equal(parts[1]?.image_url?.url, "data:image/jpeg;base64,QUJD");
+  assert.deepEqual(parts[0], {
+    content: [
+      { source: { data: "QUJD", media_type: "image/jpeg", type: "base64" }, type: "image" }
+    ],
+    tool_use_id: "call_01",
+    type: "tool_result"
+  });
   assert.equal(messages[2]?.role, "user");
   assert.equal(messages[2]?.content, "continue");
 });
 
-test("string tool_result content survives the openai_chat flatten", () => {
+test("string tool_result content survives the openai_chat attempt body", () => {
   const config = {
     Providers: [
       {
@@ -816,7 +822,9 @@ test("string tool_result content survives the openai_chat flatten", () => {
 
   const messages = result.body?.messages ?? [];
   assert.equal(messages.length, 3);
-  assert.match(messages[1]?.content?.[0]?.text, /\[tool result for call_str\] PASS 12 FAIL 0/);
+  assert.deepEqual(messages[1]?.content, [
+    { content: "PASS 12 FAIL 0", tool_use_id: "call_str", type: "tool_result" }
+  ]);
 });
 
 test("openai_chat bodies without tool or image blocks are returned unchanged", () => {
