@@ -966,6 +966,10 @@ export class GatewayRequestPipeline {
       })
         ? contextOverflowErrorResponseStream(clientResponseBody, responseProtocol)
         : clientResponseBody;
+      if (responseToClient !== clientResponseBody) {
+        // the rewritten body has a different length - never keep the upstream content-length
+        responseHeaders.delete("content-length");
+      }
       const responseStreams = uniqueStreams([upstreamBody, patchedResponseBody, multiAgentResponseBody, hostedWebSearchResponseBody, responseBody, clientResponseBody, responseToClient]);
       const sampler = createBodySampler();
       const sseErrorDetector = createSseErrorDetector(responseHeaders.get("content-type") ?? undefined);

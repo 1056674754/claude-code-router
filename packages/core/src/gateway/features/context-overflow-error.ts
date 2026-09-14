@@ -100,28 +100,14 @@ export function rewriteContextOverflowErrorBody(
 
 function findUpstreamOverflowMessage(envelope: Record<string, unknown>): string | undefined {
   const candidates: string[] = [];
-  const attempts = envelope.attempts;
-  if (Array.isArray(attempts)) {
-    for (const attempt of attempts) {
-      if (!isRecord(attempt)) {
-        continue;
-      }
-      candidates.push(stringValue(attempt.message) ?? "");
-      const details = attempt.details;
-      if (isRecord(details)) {
-        candidates.push(stringValue(details.message) ?? "");
-        const error = details.error;
-        if (isRecord(error)) {
-          candidates.push(stringValue(error.message) ?? "");
-        }
-      }
-    }
+  // The gateway envelope nests the routing detail: {error:{message, attempts:[
+  // {message, details:{message, error:{message}}}]}} - but be tolerant of a
+  // flat shape too.
+  const errorObject = isRecord(envelope.error) ? envelope.error : undefined;
+  collectOverflowCandidates(envelope, candidates);
+  if (errorObject) {
+    collectOverflowCandidates(errorObject, candidates);
   }
-  const topLevel = envelope.error;
-  if (isRecord(topLevel)) {
-    candidates.push(stringValue(topLevel.message) ?? "");
-  }
-  candidates.push(stringValue(envelope.message) ?? "");
   for (const candidate of candidates) {
     const text = candidate.trim();
     if (text && contextOverflowPatterns.some((pattern) => pattern.test(text))) {
@@ -129,4 +115,26 @@ function findUpstreamOverflowMessage(envelope: Record<string, unknown>): string 
     }
   }
   return undefined;
+}
+
+function collectOverflowCandidates(source: Record<string, unknown>, candidates: string[]): void {
+  candidates.push(stringValue(source.message) ?? "");
+  const attempts = source.attempts;
+  if (!Array.isArray(attempts)) {
+    return;
+  }
+  for (const attempt of attempts) {
+    if (!isRecord(attempt)) {
+      continue;
+    }
+    candidates.push(stringValue(attempt.message) ?? "");
+    const details = attempt.details;
+    if (!isRecord(details)) {
+      continue;
+    }
+    candidates.push(stringValue(details.message) ?? "");
+    if (isRecord(details.error)) {
+      candidates.push(stringValue(details.error.message) ?? "");
+    }
+  }
 }

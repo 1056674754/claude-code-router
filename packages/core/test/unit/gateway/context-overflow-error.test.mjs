@@ -8,24 +8,27 @@ import {
 } from "@ccr/core/gateway/features/context-overflow-error.ts";
 
 const envelope = {
-  attempts: [
-    {
-      details: {
-        error: {
-          code: "400001",
-          message: "The request is invalid: This model's maximum context length is 1048576 tokens. However, you requested 2692002 tokens (2628002 in the messages, 64000 in the completion). Please reduce the length of the messages or completion..",
-          type: "invalid_request_error"
-        }
-      },
-      message: "Upstream request failed.",
-      provider: "openai",
-      stage: "upstream_response",
-      status: 400
-    }
-  ],
-  error: { message: "All target providers failed." },
-  target_provider_names: ["provider-deepseek-6b115730d6"],
-  target_providers: ["openai"]
+  error: {
+    attempts: [
+      {
+        details: {
+          error: {
+            code: "400001",
+            message: "The request is invalid: This model's maximum context length is 1048576 tokens. However, you requested 2692002 tokens (2628002 in the messages, 64000 in the completion). Please reduce the length of the messages or completion..",
+            type: "invalid_request_error"
+          }
+        },
+        message: "Upstream request failed.",
+        provider: "openai",
+        provider_name: "provider-deepseek-6b115730d6",
+        stage: "upstream_response",
+        status: 400
+      }
+    ],
+    message: "All target providers failed.",
+    target_provider_names: ["provider-deepseek-6b115730d6"],
+    target_providers: ["openai"]
+  }
 };
 
 test("context overflow errors are surfaced as the message the client matches on", () => {
@@ -37,7 +40,7 @@ test("context overflow errors are surfaced as the message the client matches on"
   assert.match(parsed.error.message, /^prompt is too long: /);
   assert.match(parsed.error.message, /maximum context length is 1048576/);
   // the routing envelope stays available for logs/clients that inspect it
-  assert.deepEqual(parsed.attempts, envelope.attempts);
+  assert.deepEqual(parsed.error.attempts, envelope.error.attempts);
 });
 
 test("the openai envelope keeps its shape and only gains the upstream reason", () => {
@@ -46,13 +49,25 @@ test("the openai envelope keeps its shape and only gains the upstream reason", (
   const parsed = JSON.parse(rewritten);
   assert.equal(parsed.type, undefined);
   assert.match(parsed.error.message, /^prompt is too long: /);
-  assert.deepEqual(parsed.target_providers, ["openai"]);
+  assert.deepEqual(parsed.error.target_providers, ["openai"]);
+});
+
+test("a flat envelope shape is recognised too", () => {
+  const flat = {
+    attempts: [{ details: { error: { message: "maximum context length is 200000 tokens" } }, message: "Upstream request failed." }],
+    error: { message: "All target providers failed." }
+  };
+  const rewritten = rewriteContextOverflowErrorBody(JSON.stringify(flat), "anthropic_messages");
+  assert.ok(rewritten);
+  assert.match(JSON.parse(rewritten).error.message, /^prompt is too long: maximum context length/);
 });
 
 test("non-overflow upstream errors are left untouched", () => {
   const other = {
-    attempts: [{ details: { error: { message: "Invalid max_tokens value, the valid range of max_tokens is [1, 393216]." } }, message: "Upstream request failed.", status: 400 }],
-    error: { message: "All target providers failed." }
+    error: {
+      attempts: [{ details: { error: { message: "Invalid max_tokens value, the valid range of max_tokens is [1, 393216]." } }, message: "Upstream request failed.", status: 400 }],
+      message: "All target providers failed."
+    }
   };
   assert.equal(rewriteContextOverflowErrorBody(JSON.stringify(other), "anthropic_messages"), undefined);
   assert.equal(rewriteContextOverflowErrorBody("not json", "anthropic_messages"), undefined);
