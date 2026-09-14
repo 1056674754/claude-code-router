@@ -16,13 +16,21 @@ const maxRewriteBytes = 512 * 1024;
 const contextOverflowPatterns: RegExp[] = [
   /prompt is too long/i,
   /prompt too long/i,
+  /prompt exceeds max length/i,               // zhipu / ctaigw glm (code 1261)
+  /range of input length/i,                   // alibaba / ctaigw qwen (e.g. [1, 983616])
   /maximum context length/i,
   /context length is/i,
   /exceeds? (?:the )?(?:maximum )?(?:context|token)/i,
   /too many (?:input )?tokens/i,
   /requested \d+ tokens/i,
-  /input token(?:s)? (?:count )?(?:is )?too (?:large|long)/i
+  /input token(?:s)? (?:count )?(?:is )?too (?:large|long)/i,
+  /(?:输入|上下|提示)[^。，,;]{0,12}(?:超过|超出)[^。，,;]{0,12}(?:长度|上限|限制)/,
+  /超过最大长度/,
+  /长度超过/
 ];
+
+// zhipu's "prompt exceeds max length" carries no numbers, only this code
+const contextOverflowCodes = new Set(["1261", "1214"]);
 
 export function shouldRewriteContextOverflowErrorResponse(input: {
   contentType: string | undefined;
@@ -99,26 +107,39 @@ export function rewriteContextOverflowErrorBody(
 }
 
 function findUpstreamOverflowMessage(envelope: Record<string, unknown>): string | undefined {
-  const candidates: string[] = [];
+  const candidates: OverflowCandidate[] = [];
   // The gateway envelope nests the routing detail: {error:{message, attempts:[
-  // {message, details:{message, error:{message}}}]}} - but be tolerant of a
-  // flat shape too.
+  // {message, details:{message, error:{message, code}}}]}} - but be tolerant of
+  // a flat shape too.
   const errorObject = isRecord(envelope.error) ? envelope.error : undefined;
   collectOverflowCandidates(envelope, candidates);
   if (errorObject) {
     collectOverflowCandidates(errorObject, candidates);
   }
   for (const candidate of candidates) {
-    const text = candidate.trim();
-    if (text && contextOverflowPatterns.some((pattern) => pattern.test(text))) {
+    const text = candidate.text.trim();
+    if (!text) {
+      continue;
+    }
+    if (contextOverflowPatterns.some((pattern) => pattern.test(text))) {
+      return text;
+    }
+    // zhipu answers "Prompt exceeds max length" with code 1261 and no numbers
+    if (candidate.code && contextOverflowCodes.has(candidate.code)) {
       return text;
     }
   }
   return undefined;
 }
 
-function collectOverflowCandidates(source: Record<string, unknown>, candidates: string[]): void {
-  candidates.push(stringValue(source.message) ?? "");
+interface OverflowCandidate {
+  code?: string;
+  text: string;
+}
+
+function collectOverflowCandidates(source: Record<string, unknown>, candidates: OverflowCandidate[]): void {
+  const code = stringValue(source.code);
+  candidates.push({ code, text: stringValue(source.message) ?? "" });
   const attempts = source.attempts;
   if (!Array.isArray(attempts)) {
     return;
@@ -127,14 +148,17 @@ function collectOverflowCandidates(source: Record<string, unknown>, candidates: 
     if (!isRecord(attempt)) {
       continue;
     }
-    candidates.push(stringValue(attempt.message) ?? "");
+    candidates.push({ text: stringValue(attempt.message) ?? "" });
     const details = attempt.details;
     if (!isRecord(details)) {
       continue;
     }
-    candidates.push(stringValue(details.message) ?? "");
+    candidates.push({ text: stringValue(details.message) ?? "" });
     if (isRecord(details.error)) {
-      candidates.push(stringValue(details.error.message) ?? "");
+      candidates.push({
+        code: stringValue(details.error.code),
+        text: stringValue(details.error.message) ?? ""
+      });
     }
   }
 }

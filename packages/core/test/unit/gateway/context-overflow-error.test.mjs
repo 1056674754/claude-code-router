@@ -62,6 +62,56 @@ test("a flat envelope shape is recognised too", () => {
   assert.match(JSON.parse(rewritten).error.message, /^prompt is too long: maximum context length/);
 });
 
+test("zhipu/ctaigw glm overflow wording is recognised (Prompt exceeds max length, code 1261)", () => {
+  const zhipu = {
+    error: {
+      attempts: [{
+        details: { error: { code: "1261", message: "Prompt exceeds max length", type: "upstream_error" } },
+        message: "Upstream request failed.",
+        status: 400
+      }],
+      message: "All target providers failed.",
+      target_provider_names: ["provider-deepseek-6b115730d6"]
+    }
+  };
+  const rewritten = rewriteContextOverflowErrorBody(JSON.stringify(zhipu), "anthropic_messages");
+  assert.ok(rewritten);
+  assert.match(JSON.parse(rewritten).error.message, /^prompt is too long: Prompt exceeds max length$/);
+});
+
+test("the zhipu code alone is enough (message wording changes)", () => {
+  const zhipu = { error: { attempts: [{ details: { error: { code: "1261", message: "请求过长" } } }], message: "All target providers failed." } };
+  const rewritten = rewriteContextOverflowErrorBody(JSON.stringify(zhipu), "anthropic_messages");
+  assert.ok(rewritten);
+  assert.match(JSON.parse(rewritten).error.message, /^prompt is too long: /);
+});
+
+test("ctaigw qwen overflow wording is recognised (Range of input length)", () => {
+  const qwen = {
+    error: {
+      attempts: [{
+        details: { error: { code: "invalid_parameter_error", message: "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 983616]", type: "invalid_request_error" } },
+        message: "Upstream request failed.",
+        status: 400
+      }],
+      message: "All target providers failed."
+    }
+  };
+  const rewritten = rewriteContextOverflowErrorBody(JSON.stringify(qwen), "anthropic_messages");
+  assert.ok(rewritten);
+  assert.match(JSON.parse(rewritten).error.message, /^prompt is too long: <400> InternalError/);
+});
+
+test("a max_tokens range error is not mistaken for a context overflow", () => {
+  const notOverflow = {
+    error: {
+      attempts: [{ details: { error: { code: "1210", message: "max_tokens参数非法：限制数值范围[1,131072]", type: "upstream_error" } }, message: "Upstream request failed.", status: 400 }],
+      message: "All target providers failed."
+    }
+  };
+  assert.equal(rewriteContextOverflowErrorBody(JSON.stringify(notOverflow), "anthropic_messages"), undefined);
+});
+
 test("non-overflow upstream errors are left untouched", () => {
   const other = {
     error: {
