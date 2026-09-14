@@ -893,7 +893,12 @@ export class GatewayRequestPipeline {
         model: clientVisibleResponseModel,
         protocol: responseProtocol
       });
-      if (codexApplyPatchBridgeActive || codexMultiAgentBridgeActive || appendContextArchiveFooter || transformCodexCompactResponse || rewriteAnthropicResponseModel) {
+      // Decide before writeHead: the rewritten error body has a different length.
+      const rewritesContextOverflowError = shouldRewriteContextOverflowErrorResponse({
+        contentType: responseHeaders.get("content-type") ?? undefined,
+        status: upstreamResponse.status
+      });
+      if (codexApplyPatchBridgeActive || codexMultiAgentBridgeActive || appendContextArchiveFooter || transformCodexCompactResponse || rewriteAnthropicResponseModel || rewritesContextOverflowError) {
         responseHeaders.delete("content-length");
       }
       recordProviderCredentialOutcome(this.config, method, upstreamResult.attempt, upstreamResponse.status, responseHeaders);
@@ -960,16 +965,9 @@ export class GatewayRequestPipeline {
       const clientResponseBody = rewriteAnthropicResponseModel && clientVisibleResponseModel
         ? rewriteAnthropicMessageStartModelStream(responseBody, clientVisibleResponseModel)
         : responseBody;
-      const responseToClient = shouldRewriteContextOverflowErrorResponse({
-        contentType: responseHeaders.get("content-type") ?? undefined,
-        status: upstreamResponse.status
-      })
+      const responseToClient = rewritesContextOverflowError
         ? contextOverflowErrorResponseStream(clientResponseBody, responseProtocol)
         : clientResponseBody;
-      if (responseToClient !== clientResponseBody) {
-        // the rewritten body has a different length - never keep the upstream content-length
-        responseHeaders.delete("content-length");
-      }
       const responseStreams = uniqueStreams([upstreamBody, patchedResponseBody, multiAgentResponseBody, hostedWebSearchResponseBody, responseBody, clientResponseBody, responseToClient]);
       const sampler = createBodySampler();
       const sseErrorDetector = createSseErrorDetector(responseHeaders.get("content-type") ?? undefined);
