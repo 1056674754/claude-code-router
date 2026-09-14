@@ -703,7 +703,7 @@ test("anthropic image blocks stay untouched for openai_chat targets", () => {
   assert.deepEqual(content?.[2], { source: { type: "url", url: "https://example.com/cat.png" }, type: "image" });
 });
 
-test("tool and image blocks reach openai_chat targets unconverted", () => {
+test("tool blocks stay native for openai_chat targets and tool_result images are hoisted", () => {
   const config = {
     Providers: [
       {
@@ -762,13 +762,8 @@ test("tool and image blocks reach openai_chat targets unconverted", () => {
   ]);
   assert.equal(messages[1]?.role, "user");
   const parts = messages[1]?.content ?? [];
-  assert.deepEqual(parts[0], {
-    content: [
-      { source: { data: "QUJD", media_type: "image/jpeg", type: "base64" }, type: "image" }
-    ],
-    tool_use_id: "call_01",
-    type: "tool_result"
-  });
+  assert.deepEqual(parts[0], { content: "[image attached]", tool_use_id: "call_01", type: "tool_result" });
+  assert.deepEqual(parts[1], { source: { data: "QUJD", media_type: "image/jpeg", type: "base64" }, type: "image" });
   assert.equal(messages[2]?.role, "user");
   assert.equal(messages[2]?.content, "continue");
 });
@@ -858,5 +853,129 @@ test("openai_chat bodies without tool or image blocks are returned unchanged", (
     routedModel: "Ctyun/deepseek-v4.1-flash"
   });
 
+  assert.deepEqual(result.body?.messages, body.messages);
+});
+
+const ctyunOpenAiChatConfig = {
+  Providers: [
+    {
+      api_base_url: "https://ai.ctaigw.cn/v1",
+      api_key: "test-key",
+      models: ["deepseek-v4.1-flash"],
+      name: "Ctyun",
+      type: "openai_chat_completions"
+    }
+  ],
+  Router: { fallback: { mode: "off", models: [], retryCount: 1 }, rules: [] },
+  virtualModelProfiles: []
+};
+
+const redPng = { data: "QUJD", media_type: "image/png", type: "base64" };
+
+function attemptForMessages(messages) {
+  return prepareGatewayUpstreamAttemptForTest({
+    body: { max_tokens: 8, messages, model: "Ctyun/deepseek-v4.1-flash" },
+    config: ctyunOpenAiChatConfig,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+}
+
+test("tool_result images are hoisted into the user message for openai_chat targets", () => {
+  const result = attemptForMessages([
+    { content: [{ input: { path: "/tmp/shot.png" }, id: "call_img", name: "Read", type: "tool_use" }], role: "assistant" },
+    { content: [{ content: [{ source: redPng, type: "image" }], tool_use_id: "call_img", type: "tool_result" }], role: "user" }
+  ]);
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages[0]?.content?.[0]?.type, "tool_use");
+  assert.equal(messages[1]?.role, "user");
+  assert.deepEqual(messages[1]?.content, [
+    { content: "[image attached]", tool_use_id: "call_img", type: "tool_result" },
+    { source: redPng, type: "image" }
+  ]);
+});
+
+test("text plus image tool_result keeps the text and hoists the image", () => {
+  const result = attemptForMessages([
+    { content: [{ input: { path: "/tmp/shot.png" }, id: "call_mix", name: "Read", type: "tool_use" }], role: "assistant" },
+    {
+      content: [{
+        content: [{ text: "screenshot:", type: "text" }, { source: redPng, type: "image" }],
+        tool_use_id: "call_mix",
+        type: "tool_result"
+      }],
+      role: "user"
+    }
+  ]);
+
+  const parts = result.body?.messages?.[1]?.content ?? [];
+  assert.deepEqual(parts[0], { content: "screenshot:", tool_use_id: "call_mix", type: "tool_result" });
+  assert.deepEqual(parts[1], { source: redPng, type: "image" });
+});
+
+test("stringified tool_result images are restored as image blocks", () => {
+  const stringified = JSON.stringify([{ source: redPng, type: "image" }]);
+  const result = attemptForMessages([
+    { content: [{ input: { path: "/tmp/shot.png" }, id: "call_str_img", name: "Read", type: "tool_use" }], role: "assistant" },
+    { content: [{ content: stringified, tool_use_id: "call_str_img", type: "tool_result" }], role: "user" }
+  ]);
+
+  const parts = result.body?.messages?.[1]?.content ?? [];
+  assert.deepEqual(parts[0], { content: "[image attached]", tool_use_id: "call_str_img", type: "tool_result" });
+  assert.deepEqual(parts[1], { source: redPng, type: "image" });
+});
+
+test("stringified images in plain user messages are restored too", () => {
+  const stringified = JSON.stringify([{ source: redPng, type: "image" }]);
+  const result = attemptForMessages([{ content: stringified, role: "user" }]);
+  assert.deepEqual(result.body?.messages?.[0]?.content, [{ source: redPng, type: "image" }]);
+});
+
+test("stringified images on openai-style tool messages move into a user message", () => {
+  const stringified = JSON.stringify([{ source: redPng, type: "image" }]);
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body: {
+      max_tokens: 8,
+      messages: [
+        { content: "", role: "assistant", tool_calls: [{ function: { arguments: "{}", name: "Read" }, id: "call_oa", type: "function" }] },
+        { content: stringified, role: "tool", tool_call_id: "call_oa" }
+      ],
+      model: "Ctyun/deepseek-v4.1-flash"
+    },
+    config: ctyunOpenAiChatConfig,
+    headers: {},
+    method: "POST",
+    path: "/v1/chat/completions",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
+
+  const messages = result.body?.messages ?? [];
+  assert.equal(messages[1]?.role, "tool");
+  assert.equal(messages[1]?.content, "[image attached]");
+  assert.equal(messages[2]?.role, "user");
+  assert.deepEqual(messages[2]?.content, [{ source: redPng, type: "image" }]);
+});
+
+test("plain text tool results and bodies without images are untouched", () => {
+  const body = {
+    messages: [
+      { content: [{ input: { path: "/tmp/a.txt" }, id: "call_txt", name: "Read", type: "tool_use" }], role: "assistant" },
+      { content: [{ content: "PASS 12 FAIL 0", tool_use_id: "call_txt", type: "tool_result" }], role: "user" },
+      { content: "not a json array", role: "user" }
+    ],
+    max_tokens: 8,
+    model: "Ctyun/deepseek-v4.1-flash"
+  };
+  const result = prepareGatewayUpstreamAttemptForTest({
+    body,
+    config: ctyunOpenAiChatConfig,
+    headers: {},
+    method: "POST",
+    path: "/v1/messages",
+    routedModel: "Ctyun/deepseek-v4.1-flash"
+  });
   assert.deepEqual(result.body?.messages, body.messages);
 });

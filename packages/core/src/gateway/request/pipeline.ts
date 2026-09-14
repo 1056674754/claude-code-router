@@ -32,6 +32,7 @@ import { recordProviderCredentialOutcome } from "@ccr/core/providers/credential-
 import { codexApplyPatchBridgeResponseStream, prepareCodexApplyPatchBridgeRequest } from "@ccr/core/gateway/features/codex-patch-bridge";
 import { codexMultiAgentBridgeResponseStream, prepareCodexMultiAgentBridgeRequest } from "@ccr/core/gateway/features/codex-multi-agent-bridge";
 import { rewriteAnthropicMessageStartModelStream, shouldRewriteAnthropicMessageStartModel } from "@ccr/core/gateway/features/anthropic-response-model";
+import { contextOverflowErrorResponseStream, shouldRewriteContextOverflowErrorResponse } from "@ccr/core/gateway/features/context-overflow-error";
 import { prepareCursorOpenAICompatChatBody } from "@ccr/core/gateway/features/cursor-compat";
 import { filteredResponseHeaders, formatError, formatUpstreamErrorForLog, forwardHeaders, inferGatewayClient, readRequestBody, sendJson, shouldCaptureGatewayUsage, shouldSendBody, stripLocalGatewayAuthHeaders } from "@ccr/core/gateway/http/io";
 import { parseJsonObjectSafe, serializeJsonBody, takeJsonObject } from "@ccr/core/gateway/http/body";
@@ -959,7 +960,13 @@ export class GatewayRequestPipeline {
       const clientResponseBody = rewriteAnthropicResponseModel && clientVisibleResponseModel
         ? rewriteAnthropicMessageStartModelStream(responseBody, clientVisibleResponseModel)
         : responseBody;
-      const responseStreams = uniqueStreams([upstreamBody, patchedResponseBody, multiAgentResponseBody, hostedWebSearchResponseBody, responseBody, clientResponseBody]);
+      const responseToClient = shouldRewriteContextOverflowErrorResponse({
+        contentType: responseHeaders.get("content-type") ?? undefined,
+        status: upstreamResponse.status
+      })
+        ? contextOverflowErrorResponseStream(clientResponseBody, responseProtocol)
+        : clientResponseBody;
+      const responseStreams = uniqueStreams([upstreamBody, patchedResponseBody, multiAgentResponseBody, hostedWebSearchResponseBody, responseBody, clientResponseBody, responseToClient]);
       const sampler = createBodySampler();
       const sseErrorDetector = createSseErrorDetector(responseHeaders.get("content-type") ?? undefined);
       let streamDetectedError: string | undefined;
@@ -990,7 +997,7 @@ export class GatewayRequestPipeline {
       onClientDisconnect = () => {
         streamDetectedError ??= sseErrorDetector.finish();
         writeStreamLog();
-        clientResponseBody.unpipe(response);
+        responseToClient.unpipe(response);
         destroyResponseStreams(responseStreams);
       };
       onResponseFinish = () => {
@@ -1016,11 +1023,11 @@ export class GatewayRequestPipeline {
       for (const stream of responseStreams) {
         stream.on("error", onResponseStreamError);
       }
-      clientResponseBody.on("data", (chunk) => {
+      responseToClient.on("data", (chunk) => {
         sampler.append(chunk);
         streamDetectedError ??= sseErrorDetector.append(chunk);
       });
-      clientResponseBody.once("end", () => {
+      responseToClient.once("end", () => {
         upstreamStreamEnded = true;
         streamDetectedError ??= sseErrorDetector.finish();
         if (responseCompleted || response.writableEnded) {
@@ -1028,7 +1035,7 @@ export class GatewayRequestPipeline {
         }
       });
       if (shouldCaptureUsage) {
-        clientResponseBody.once("end", () => {
+        responseToClient.once("end", () => {
           recordUsage({
             bodyText: sampler.read(),
             client,
@@ -1048,7 +1055,7 @@ export class GatewayRequestPipeline {
         onClientDisconnect();
         return;
       }
-      clientResponseBody.pipe(response);
+      responseToClient.pipe(response);
     }
 
   async replayContextArchive(input: ContextArchiveReplayInput): Promise<ContextArchiveReplayResult> {

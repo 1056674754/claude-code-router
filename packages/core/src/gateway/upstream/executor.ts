@@ -873,18 +873,164 @@ function usageAwareOpenAiChatAttemptBody(input: {
     return input.body;
   }
   const sanitizedBody = stripUnsupportedOpenAiRequestParameters(input.body);
-  // No body shim here. The bundled gateway runtime converts anthropic
-  // tool_use -> assistant `tool_calls` (with id/name/arguments), tool_result ->
-  // `role:"tool"` + `tool_call_id`, and image blocks -> openai `image_url`
-  // data URLs natively for openai_chat_completions targets (verified against
-  // the shipped runtime with a recording upstream). An earlier patch flattened
-  // tool blocks into text placeholders and rewrote images to `image_url`
-  // before forwarding, which broke tool calling on every Ctyun-routed request:
-  // the upstream then saw past tool calls as prose and imitated that text
-  // format, and the pre-converted image blocks were dropped by the converter.
+  // The bundled runtime already converts tool_use -> assistant `tool_calls`
+  // and tool_result -> `role:"tool"` correctly, but OpenAI chat tool messages
+  // cannot carry images, and its conversion mis-handles an image inside a
+  // tool_result two ways (both reproduced against the shipped runtime with a
+  // recording upstream):
+  //   tool_result content = [image]        -> the image block is JSON-stringified
+  //                                           into the tool text, so a screenshot
+  //                                           read with Read/View becomes ~250 KB of
+  //                                           base64 tokens (~180k tokens each)
+  //   tool_result content = [text, image]  -> the image is dropped silently
+  // Hoist those images into the enclosing user message, where the runtime does
+  // convert them into openai `image_url` parts (~400 tokens by pixel size).
+  // Nothing else about the body is rewritten - flattening tool_use/tool_result
+  // into text breaks tool calling on every openai_chat target.
   return providerProtocol === "openai_chat_completions"
-    ? usageAwareOpenAiChatBody(sanitizedBody)
+    ? usageAwareOpenAiChatBody(hoistToolResultImagesForOpenAiChat(sanitizedBody))
     : sanitizedBody;
+}
+
+const hoistedToolResultImagePlaceholder = "[image attached]";
+
+function hoistToolResultImagesForOpenAiChat(body: Buffer | undefined): Buffer | undefined {
+  const parsedBody = parseJsonObjectSafe(body);
+  if (!parsedBody || !Array.isArray(parsedBody.messages)) {
+    return body;
+  }
+  let changed = false;
+  const messages: unknown[] = [];
+  for (const message of parsedBody.messages) {
+    if (!isRecord(message)) {
+      messages.push(message);
+      continue;
+    }
+    const content = message.content;
+    if (typeof content === "string") {
+      const extracted = extractStringifiedImageBlocks(content);
+      if (extracted) {
+        changed = true;
+        const text = extracted.blocks.length === 0 && extracted.images.length > 0
+          ? hoistedToolResultImagePlaceholder
+          : extracted.blocks;
+        messages.push({ ...message, content: message.role === "tool" ? text : [...extracted.blocks, ...extracted.images] });
+        if (message.role === "tool") {
+          messages.push({ content: extracted.images, role: "user" });
+        }
+        continue;
+      }
+      messages.push(message);
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      messages.push(message);
+      continue;
+    }
+    const nextContent: unknown[] = [];
+    let messageChanged = false;
+    for (const block of content) {
+      if (!isRecord(block) || block.type !== "tool_result") {
+        nextContent.push(block);
+        continue;
+      }
+      const normalized = normalizeToolResultContent(block.content);
+      if (normalized.images.length === 0) {
+        nextContent.push(block);
+        continue;
+      }
+      messageChanged = true;
+      nextContent.push({ ...block, content: normalized.content });
+      nextContent.push(...normalized.images);
+    }
+    if (messageChanged) {
+      changed = true;
+      messages.push({ ...message, content: nextContent });
+      continue;
+    }
+    messages.push(message);
+  }
+  return changed ? serializeJsonBody({ ...parsedBody, messages }) : body;
+}
+
+function normalizeToolResultContent(content: unknown): { content: unknown; images: unknown[] } {
+  if (typeof content === "string") {
+    const extracted = extractStringifiedImageBlocks(content);
+    if (!extracted) {
+      return { content, images: [] };
+    }
+    const text = extracted.blocks.length === 0
+      ? hoistedToolResultImagePlaceholder
+      : extracted.blocks;
+    return { content: text, images: extracted.images };
+  }
+  if (!Array.isArray(content)) {
+    return { content, images: [] };
+  }
+  const images: unknown[] = [];
+  const rest: unknown[] = [];
+  for (const item of content) {
+    const image = anthropicImageBlock(item);
+    if (image) {
+      images.push(image);
+      continue;
+    }
+    rest.push(item);
+  }
+  if (images.length === 0) {
+    return { content, images: [] };
+  }
+  if (rest.length === 0) {
+    return { content: hoistedToolResultImagePlaceholder, images };
+  }
+  const text = rest
+    .map((item) => (isRecord(item) && item.type === "text" ? stringValue(item.text) : undefined))
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join("\n")
+    .trim();
+  return { content: text || hoistedToolResultImagePlaceholder, images };
+}
+
+/** The tool result the client stringified: `[{"type":"image","source":{...}}]`. */
+function extractStringifiedImageBlocks(text: string): { blocks: unknown[]; images: unknown[] } | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length < 2 || trimmed[0] !== "[" || trimmed.length > 8_000_000) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) {
+    return undefined;
+  }
+  const images: unknown[] = [];
+  const blocks: unknown[] = [];
+  for (const item of parsed) {
+    if (isRecord(item) && typeof item.type === "string" && item.type !== "image") {
+      blocks.push(item);
+      continue;
+    }
+    const image = anthropicImageBlock(item);
+    if (!image) {
+      return undefined;
+    }
+    images.push(image);
+  }
+  return images.length === 0 ? undefined : { blocks, images };
+}
+
+function anthropicImageBlock(value: unknown): unknown | undefined {
+  if (!isRecord(value) || value.type !== "image" || !isRecord(value.source)) {
+    return undefined;
+  }
+  const sourceType = stringValue(value.source.type);
+  if (sourceType !== "base64" && sourceType !== "url") {
+    return undefined;
+  }
+  return value;
 }
 
 function stripUnsupportedOpenAiRequestParameters(body: Buffer | undefined): Buffer | undefined {
