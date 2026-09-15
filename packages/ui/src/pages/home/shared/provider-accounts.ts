@@ -197,11 +197,14 @@ export function formatProviderAccountReset(value: string, translate: (value: str
   if (minutes < 60) {
     return `${prefix} ${minutes}m`;
   }
-  const hours = Math.round(minutes / 60);
+  const hours = Math.floor(minutes / 60);
+  const leftoverMinutes = minutes % 60;
   if (hours < 48) {
-    return `${prefix} ${hours}h`;
+    return leftoverMinutes > 0 ? `${prefix} ${hours}h ${leftoverMinutes}m` : `${prefix} ${hours}h`;
   }
-  return `${prefix} ${Math.round(hours / 24)}d`;
+  const days = Math.floor(hours / 24);
+  const leftoverHours = hours % 24;
+  return leftoverHours > 0 ? `${prefix} ${days}d ${leftoverHours}h` : `${prefix} ${days}d`;
 }
 
 export function formatProviderAccountMeterTitle(meter: ProviderAccountMeter, translate: (value: string) => string): string {

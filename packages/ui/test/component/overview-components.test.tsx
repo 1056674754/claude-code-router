@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { formatCodexResetCardExpiry, formatCodexResetCardNumber, OverviewStatisticsResetDialog, OverviewView } from "@ccr/ui/pages/home/components/dashboard.tsx";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
 import { parseStatusBucketDate, usageStatusTone } from "@ccr/ui/pages/home/shared/controls.tsx";
-import { formatProviderAccountMeterValue, providerAccountMeterDetailValidityProgress } from "@ccr/ui/pages/home/shared/provider-accounts.ts";
+import { formatProviderAccountMeterValue, formatProviderAccountReset, providerAccountMeterDetailValidityProgress } from "@ccr/ui/pages/home/shared/provider-accounts.ts";
 import type { GatewayProviderConfig, OverviewWidgetConfig, ProviderAccountSnapshot } from "@ccr/core/contracts/app.ts";
 import { accountSnapshots, installBrowserGlobals, usageStats } from "../fixtures/index.ts";
 
@@ -915,4 +915,18 @@ test("usageStatusTone keeps small failure counts out of red and scales with volu
   assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.985 }), "ok");
   assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.95 }), "warn");
   assert.equal(usageStatusTone({ requestCount: 50_000, successRate: 0.7 }), "error");
+});
+
+test("provider account reset time keeps minutes so it can drive an alarm", () => {
+  const inMinutes = (m: number) => new Date(Date.now() + m * 60000).toISOString();
+  const t = (s: string) => s;
+  assert.equal(formatProviderAccountReset(inMinutes(45), t), "expires in 45m");
+  // 1h23m must not round away the minutes (the old code said "1h").
+  assert.equal(formatProviderAccountReset(inMinutes(83), t), "expires in 1h 23m");
+  assert.equal(formatProviderAccountReset(inMinutes(60), t), "expires in 1h");
+  assert.equal(formatProviderAccountReset(inMinutes(60 * 5 + 7), t), "expires in 5h 7m");
+  // Beyond two days: days plus leftover hours.
+  assert.equal(formatProviderAccountReset(inMinutes(60 * 50), t), "expires in 2d 2h");
+  assert.equal(formatProviderAccountReset(inMinutes(60 * 48), t), "expires in 2d");
+  assert.equal(formatProviderAccountReset(inMinutes(-1), t), "expired");
 });
