@@ -134,15 +134,16 @@ test("Claude Code model discovery exposes compact only when context archive MCP 
 });
 
 test("fallback retry delay backs off retryable HTTP statuses", () => {
-  assert.equal(fallbackRetryDelayAfterStatusForTest({ statusCode: 503 }), 1000);
-  assert.equal(fallbackRetryDelayAfterStatusForTest({ failedAttemptIndex: 1, statusCode: 408 }), 2000);
+  assert.equal(fallbackRetryDelayAfterStatusForTest({ statusCode: 503 }), 5000);
+  assert.equal(fallbackRetryDelayAfterStatusForTest({ failedAttemptIndex: 1, statusCode: 408 }), 10000);
   assert.equal(fallbackRetryDelayAfterStatusForTest({ retryAfter: "3", statusCode: 429 }), 3000);
-  assert.equal(fallbackRetryDelayAfterStatusForTest({ retryAfter: "0", statusCode: 429 }), 1000);
+  assert.equal(fallbackRetryDelayAfterStatusForTest({ retryAfter: "0", statusCode: 429 }), 5000);
 });
 
 test("fallback retry delay backs off network errors", () => {
-  assert.equal(fallbackRetryDelayAfterNetworkErrorForTest(), 1000);
-  assert.equal(fallbackRetryDelayAfterNetworkErrorForTest(2), 4000);
+  assert.equal(fallbackRetryDelayAfterNetworkErrorForTest(), 5000);
+  assert.equal(fallbackRetryDelayAfterNetworkErrorForTest(2), 20000);
+  assert.equal(fallbackRetryDelayAfterNetworkErrorForTest(4), 30000); // capped
 });
 
 test("upstream preparation includes transport header normalization changes", async () => {

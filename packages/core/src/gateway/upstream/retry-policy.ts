@@ -2,7 +2,8 @@ import type { RouterFallbackMode } from "@ccr/core/contracts/app";
 import { classifyRouteFailure } from "@ccr/core/routing/failure-classifier";
 import { clampNumber } from "@ccr/core/gateway/internal/collections";
 
-const upstreamRetryBackoffBaseMs = 1_000;
+// this fork ships a 5s base (user preference: 5s/10s/20s within retryCount 2)
+const upstreamRetryBackoffBaseMs = 5_000;
 const upstreamRetryBackoffMaxMs = 30_000;
 const upstreamRetryAfterMaxMs = 60_000;
 const rateLimitWaitBaseMs = 1_000;
