@@ -168,6 +168,9 @@ export type GatewayProviderConfig = {
   billing?: unknown;
   capabilities?: GatewayProviderCapability[];
   credentials?: ProviderCredentialConfig[];
+  // Optional per-provider upstream concurrency cap: excess requests queue at
+  // the gateway (abort-aware) instead of tripping upstream risk control.
+  maxConcurrency?: number;
   extraBody?: unknown;
   extraHeaders?: unknown;
   icon?: string;

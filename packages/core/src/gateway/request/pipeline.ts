@@ -46,6 +46,7 @@ import { fetchWithSystemProxy } from "@ccr/core/proxy/system-proxy-fetch";
 import { clientClosedRequestStatusCode, clientDisconnectMessage, coreGatewayAuthHeader, resolveStreamRequestLogOutcome, UpstreamRequestError } from "@ccr/core/gateway/internal/shared";
 import type { BrowserWebSearchMcpIntegration, BrowserWebSearchProtocolRecord, UpstreamFetchResult } from "@ccr/core/gateway/internal/shared";
 import { cancelResponseBody, destroyResponseStreams, fetchUpstreamWithFallback, mergeFallbackResponseHeaders, rewriteCapabilityResponseHeaders, uniqueStreams, upstreamResponseHeaders } from "@ccr/core/gateway/upstream/executor";
+import { acquireProviderSlot } from "@ccr/core/gateway/upstream/provider-concurrency";
 import { requestProtocolForPath, shouldApplyGatewayRouting } from "@ccr/core/routing/protocol-endpoints";
 import { modelRegistryForConfig } from "@ccr/core/routing/model-registry";
 import { createClaudeCodeWebSearchContinuationContext, createHostedWebSearchProtocolContext, hostedWebSearchProtocolResponseStream, hostedWebSearchUnavailableMessage, prepareClaudeCodeWebSearchContinuationRequestBody, prepareHostedWebSearchProtocolRequestBody, selectClaudeCodeWebSearchContinuationRecords, selectHostedWebSearchProtocolRecords } from "@ccr/core/gateway/features/hosted-web-search/index";
@@ -108,6 +109,19 @@ function stripUntrustedCcrRouteHeaders(headers: Record<string, string>): Request
     });
   }
   return changes;
+}
+
+function resolveProviderGateTarget(
+  config: AppConfig,
+  routedModel: string | undefined
+): { name: string; maxConcurrency: number } | undefined {
+  if (!routedModel) {
+    return undefined;
+  }
+  const provider = modelRegistryForConfig(config).resolveProviderModel(routedModel)?.provider;
+  return provider && typeof provider.maxConcurrency === "number" && provider.maxConcurrency > 0
+    ? { name: provider.name, maxConcurrency: provider.maxConcurrency }
+    : undefined;
 }
 
 export class GatewayRequestPipeline {
@@ -283,6 +297,14 @@ export class GatewayRequestPipeline {
         handleClientDisconnect();
       });
 
+      let releaseProviderSlot: (() => void) | undefined;
+      const releaseProviderSlotOnce = () => {
+        if (releaseProviderSlot) {
+          const release = releaseProviderSlot;
+          releaseProviderSlot = undefined;
+          release();
+        }
+      };
       const writeRequestLog = (
         statusCode: number,
         responseHeaders: Headers,
@@ -291,6 +313,7 @@ export class GatewayRequestPipeline {
         error?: string,
         responseBodySizeBytes = Buffer.byteLength(responseBodyText)
       ) => {
+        releaseProviderSlotOnce();
         const config = this.config;
         if (!config || !shouldRecordRequestLogs(config)) {
           return;
@@ -399,6 +422,20 @@ export class GatewayRequestPipeline {
         if (routed.decision.model) {
           headers[ccrRoutedModelHeader] = sanitizeHeaderValue(routed.decision.model);
           routedModel = routed.decision.model;
+        }
+        // Per-provider concurrency gate: queue instead of tripping upstream
+        // risk control when an agent fan-out exceeds the declared cap.
+        const gateProvider = resolveProviderGateTarget(activeConfig, routedModel);
+        if (gateProvider) {
+          releaseProviderSlot = await acquireProviderSlot(
+            gateProvider.name,
+            gateProvider.maxConcurrency ?? Number.MAX_SAFE_INTEGER,
+            { signal: upstreamAbortController?.signal }
+          );
+          if (!releaseProviderSlot) {
+            writeRequestLog(clientClosedRequestStatusCode, new Headers(), "", false, clientDisconnectMessage);
+            return;
+          }
         }
         bodyToForward = serialized;
         routeTrace?.capture({
