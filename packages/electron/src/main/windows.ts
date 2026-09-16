@@ -142,6 +142,12 @@ class WindowsManager {
     if (window.isMinimized()) {
       window.restore();
     }
+    // The app is an accessory (LSUIElement) with no Dock icon; activating it
+    // is still required or the main window opens behind everything. The
+    // policy stays accessory so no Dock tile/indicator ever appears.
+    if (process.platform === "darwin") {
+      app.focus({ steal: true });
+    }
     window.show();
     window.focus();
     return window;

@@ -46,6 +46,12 @@ function startPrimaryInstance(): void {
   });
 
   void app.whenReady().then(async () => {
+    // Menubar-style app: no Dock tile or indicator. The packaged app also
+    // sets LSUIElement, but doing it here keeps dev runs consistent and
+    // re-asserts the policy after any window activation.
+    if (process.platform === "darwin") {
+      app.setActivationPolicy("accessory");
+    }
     const config = await loadAppConfig();
     applyNativeThemePreference(config.theme);
     await restorePersistedMainWindowBounds();

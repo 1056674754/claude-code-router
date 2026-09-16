@@ -237,7 +237,11 @@ class TrayController {
     // "floating" keeps the popover above regular windows but below screenshot
     // and screen-capture annotation overlays; "pop-up-menu" renders above them.
     this.popover.setAlwaysOnTop(true, "floating");
-    this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // skipTransformProcessType: the app is already a permanent accessory
+    // (LSUIElement + setActivationPolicy at startup); letting this call run
+    // the Foreground<->UIElement transform is what made the panel un-openable
+    // and the Dock indicator flicker between states.
+    this.popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     this.popover.on("blur", () => this.handlePopoverBlur());
     this.popover.on("closed", () => {
       this.popover = undefined;
