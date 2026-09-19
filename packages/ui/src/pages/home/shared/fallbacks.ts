@@ -9,14 +9,18 @@ import type {
 } from "@ccr/core/contracts/app";
 import { createDefaultAppConfig } from "@ccr/core/config/default-config";
 
+// Module-level navigator access breaks node-side test imports; degrade to an
+// unknown platform when running outside a browser.
+const runtimePlatform = typeof navigator === "undefined" ? "" : navigator.platform;
+
 export const fallbackInfo: AppInfo = {
   configDbFile: "Browser preview",
   configDir: "Browser preview",
   dataDir: "Browser preview",
   desktop: false,
-  launchAtLoginSupported: /^Mac|^Win/i.test(navigator.platform),
+  launchAtLoginSupported: /^Mac|^Win/i.test(runtimePlatform),
   name: "Claude Code Router",
-  platform: navigator.platform,
+  platform: runtimePlatform,
   requestLogsDbFile: "Browser preview",
   usageDbFile: "Browser preview",
   version: "0.1.0"
@@ -56,7 +60,7 @@ export const fallbackProxyCertificateStatus: ProxyCertificateStatus = {
   caCertFile: "Browser preview",
   canInstall: false,
   message: "Certificate detection is available in the Electron app.",
-  platform: navigator.platform,
+  platform: runtimePlatform,
   state: "unknown",
   trusted: false
 };

@@ -2156,6 +2156,13 @@ export function providerCapabilitiesForProtocols(
   return mergeProviderCapabilities(selectedCapabilities, detectedMediaCapabilities);
 }
 
+export function providerProbeModelsForProtocol(
+  probe: GatewayProviderProbeResult | undefined,
+  protocol: GatewayProviderProtocol
+): string[] {
+  return probe?.protocolModels?.[protocol] ?? probe?.models ?? [];
+}
+
 export function applyProviderProbeResult(draft: AddProviderDraft, probe: GatewayProviderProbeResult): AddProviderDraft {
   const detectedProtocol = probe.detectedProtocol ?? draft.protocol;
   const selectedProtocols = selectedProviderProtocolsForProbe(draft.selectedProtocols, probe, detectedProtocol, draft.presetId);
@@ -2164,13 +2171,14 @@ export function applyProviderProbeResult(draft: AddProviderDraft, probe: Gateway
     : selectedProtocols.includes(detectedProtocol)
     ? detectedProtocol
     : selectedProtocols[0] ?? detectedProtocol;
+  const probeModels = providerProbeModelsForProtocol(probe, protocol);
   const modelDisplayNames = mergeModelDisplayNames(draft.modelDisplayNames, probe.modelDisplayNames);
   const catalogModelMetadata = mergeModelMetadata(draft.catalogModelMetadata, probe.catalogModelMetadata);
   const modelMetadata = mergeModelMetadata(draft.modelMetadata, probe.modelMetadata);
   const accountDraft = providerProbeAccountDraftPatch(draft, probe.account);
   const baseUrl = providerGlobalBaseUrlForProbe(draft.baseUrl, probe, selectedProtocols);
 
-  if (probe.models.length === 0) {
+  if (probeModels.length === 0) {
     return {
       ...draft,
       ...accountDraft,
@@ -2184,7 +2192,7 @@ export function applyProviderProbeResult(draft: AddProviderDraft, probe: Gateway
     };
   }
 
-  const detectedModels = new Set(probe.models);
+  const detectedModels = new Set(probeModels);
   const typedModels = splitLines(draft.modelsText);
   const selectedCatalogModels = draft.selectedModels.filter((model) => detectedModels.has(model));
   const selectedCustomModels = draft.selectedModels.filter((model) => !detectedModels.has(model));
@@ -2194,7 +2202,7 @@ export function applyProviderProbeResult(draft: AddProviderDraft, probe: Gateway
   const customModels = mergeProviderModelLists(selectedCustomModels, typedCustomModels);
   const nextSelectedModels = selectedModels.length > 0 || customModels.length > 0
     ? selectedModels
-    : pickRecommendedProviderModels(probe.models, probe.detectedProtocol);
+    : pickRecommendedProviderModels(probeModels, probe.detectedProtocol);
 
   return {
     ...draft,

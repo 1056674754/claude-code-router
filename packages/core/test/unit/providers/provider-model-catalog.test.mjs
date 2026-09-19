@@ -25,7 +25,8 @@ test("provider model catalog maps preset aliases to models.json defaults", () =>
   const metadata = catalog.modelMetadata?.["kimi-for-coding"];
 
   assert.deepEqual(catalog.models, ["kimi-for-coding"]);
-  assert.equal(metadata?.contextWindow, 262_144);
+  // models.json (2026-09 data refresh) moved kimi-for-coding's window to 1M.
+  assert.equal(metadata?.contextWindow, 1_048_576);
   assert.equal(metadata?.capabilities?.imageInput, true);
 });
 

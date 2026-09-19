@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-12T05:38:26.137Z",
+  "generatedAt": "2026-09-16T12:22:07.719Z",
   "generatedBy": "scripts/generate-claude-code-config-options.mjs",
   "sourceUrls": {
     "envEn": "https://code.claude.com/docs/en/env-vars.md",
@@ -20,8 +20,8 @@
       "valueKind": "string",
       "enumValues": [],
       "description": {
-        "en": "Pick which model answers when Claude calls the server-side advisor tool. Unset it to turn the advisor off. The advisor must be at least as capable as your main model; when it isn't, Claude Code sends requests without the advisor. See Choose an advisor model.",
-        "zh": "Pick which model answers when Claude calls the server-side advisor tool. Unset it to turn the advisor off. The advisor must be at least as capable as your main model; when it isn't, Claude Code sends requests without the advisor. See Choose an advisor model."
+        "en": "Pick which model answers when Claude calls the server-side advisor tool. Unset it to turn the advisor off. The advisor must be at least as capable as your main model. See Choose an advisor model for the accepted pairings and what happens when you pick one that isn't accepted.",
+        "zh": "Pick which model answers when Claude calls the server-side advisor tool. Unset it to turn the advisor off. The advisor must be at least as capable as your main model. See Choose an advisor model for the accepted pairings and what happens when you pick one that isn't accepted."
       }
     },
     {
@@ -392,8 +392,8 @@
       "valueKind": "boolean",
       "enumValues": [],
       "description": {
-        "en": "Send every Bash and PowerShell command through the auto mode classifier while auto mode is active. By default, auto mode suspends only allow rules that could run arbitrary code: tool-wide and wildcard rules such as Bash(), and interpreter or shell-wrapper prefixes such as Bash(python ). A command that any other allow rule matches, such as Bash(npm test), skips the classifier, and a destructive argument the rule's prefix didn't anticipate can get through unseen. Setting this key suspends every shell allow rule for the session so the classifier sees every command. Requires Claude Code v2.1.193 or later.",
-        "zh": "Send every Bash and PowerShell command through the auto mode classifier while auto mode is active. By default, auto mode suspends only allow rules that could run arbitrary code: tool-wide and wildcard rules such as Bash(), and interpreter or shell-wrapper prefixes such as Bash(python ). A command that any other allow rule matches, such as Bash(npm test), skips the classifier, and a destructive argument the rule's prefix didn't anticipate can get through unseen. Setting this key suspends every shell allow rule for the session so the classifier sees every command. Requires Claude Code v2.1.193 or later."
+        "en": "Send every Bash and PowerShell command through the auto mode classifier while auto mode is active. By default, auto mode suspends only allow rules that could run arbitrary code: tool-wide and wildcard rules such as Bash(), and interpreter or shell-wrapper prefixes such as Bash(python ). A command that any other allow rule matches, such as Bash(npm test), skips the classifier unless it carries per-command allowed domains. When it skips, a destructive argument the rule's prefix didn't anticipate can get through unseen. Setting this key suspends every shell allow rule for the session so the classifier sees every command. Requires Claude Code v2.1.193 or later.",
+        "zh": "Send every Bash and PowerShell command through the auto mode classifier while auto mode is active. By default, auto mode suspends only allow rules that could run arbitrary code: tool-wide and wildcard rules such as Bash(), and interpreter or shell-wrapper prefixes such as Bash(python ). A command that any other allow rule matches, such as Bash(npm test), skips the classifier unless it carries per-command allowed domains. When it skips, a destructive argument the rule's prefix didn't anticipate can get through unseen. Setting this key suspends every shell allow rule for the session so the classifier sees every command. Requires Claude Code v2.1.193 or later."
       }
     },
     {
@@ -509,6 +509,22 @@
       "description": {
         "en": "Render screen-reader friendly output: flat text without decorative borders or animations. Screen-reader mode uses the classic renderer, so the tui setting has no effect while it is active; attached background sessions still render fullscreen. Requires Claude Code v2.1.181 or later.",
         "zh": "Render screen-reader friendly output: flat text without decorative borders or animations. Screen-reader mode uses the classic renderer, so the tui setting has no effect while it is active; attached background sessions still render fullscreen. Requires Claude Code v2.1.181 or later."
+      }
+    },
+    {
+      "key": "bashEditDiffEnabled",
+      "path": [
+        "bashEditDiffEnabled"
+      ],
+      "scope": "User or managed. A true counts only from your user settings, JSON passed with --settings, or managed settings, so a true in a repository's .claude/settings.json or .claude/settings.local.json can't turn the recording on. A false in either repository file still turns it off unless a higher-precedence file sets true.",
+      "type": "Boolean",
+      "default": "unset, so Claude Code records changes in auto mode and bypassPermissions mode when it directs Claude to edit files through Bash",
+      "example": "{\n  \"bashEditDiffEnabled\": true\n}",
+      "valueKind": "boolean",
+      "enumValues": [],
+      "description": {
+        "en": "Choose whether Claude Code records the files a Bash command changes in a Git repository. When it records them, you see their diff in the terminal after the command, and your PostToolUse Bash hooks receive the changed-file list.",
+        "zh": "Choose whether Claude Code records the files a Bash command changes in a Git repository. When it records them, you see their diff in the terminal after the command, and your PostToolUse Bash hooks receive the changed-file list."
       }
     },
     {
@@ -1278,8 +1294,8 @@
       "valueKind": "array",
       "enumValues": [],
       "description": {
-        "en": "Render extra clickable badges in the footer below the input box when a regex matches turn output: tool results, including file contents and fetched pages, and Claude's own responses. Use it to turn IDs printed by project CLIs, such as review tools and issue trackers, into session links. Requires Claude Code v2.1.176 or later.",
-        "zh": "Render extra clickable badges in the footer below the input box when a regex matches turn output: tool results, including file contents and fetched pages, and Claude's own responses. Use it to turn IDs printed by project CLIs, such as review tools and issue trackers, into session links. Requires Claude Code v2.1.176 or later."
+        "en": "Render extra clickable badges in the footer below the input box when a regex matches turn output: tool results, including file contents and fetched pages, and Claude's own responses. Use it to turn IDs printed by project CLIs, such as review tools and issue trackers, into session links.",
+        "zh": "Render extra clickable badges in the footer below the input box when a regex matches turn output: tool results, including file contents and fetched pages, and Claude's own responses. Use it to turn IDs printed by project CLIs, such as review tools and issue trackers, into session links."
       }
     },
     {
@@ -1348,6 +1364,22 @@
       "description": {
         "en": "Block CLI startup until Claude Code has freshly fetched server-managed settings. If the fetch fails, Claude Code exits instead of continuing with cached or no settings. Set it when your environment can't accept even a brief window in which a session runs without its managed policy.",
         "zh": "Block CLI startup until Claude Code has freshly fetched server-managed settings. If the fetch fails, Claude Code exits instead of continuing with cached or no settings. Set it when your environment can't accept even a brief window in which a session runs without its managed policy."
+      }
+    },
+    {
+      "key": "gatewayInternalNetworks",
+      "path": [
+        "gatewayInternalNetworks"
+      ],
+      "scope": "Managed. Read only from a source on the machine: managed-settings.json, the macOS plist or Windows HKLM registry, or a policy helper. Claude Code ignores it in HKCU and server-managed settings.",
+      "type": "array of strings, at most four IPv4 CIDR blocks, each /8 to /32, not overlapping one another, and none overlapping private space.",
+      "default": "unset, so /login accepts only gateways on private addresses",
+      "example": "{\n  \"gatewayInternalNetworks\": [\"203.0.113.0/24\"]\n}",
+      "valueKind": "array",
+      "enumValues": [],
+      "description": {
+        "en": "Declare the public IPv4 blocks that your organization numbers its internal network from, so /login accepts a cloud gateway there. Requires Claude Code v2.1.268 or later.",
+        "zh": "Declare the public IPv4 blocks that your organization numbers its internal network from, so /login accepts a cloud gateway there. Requires Claude Code v2.1.268 or later."
       }
     },
     {
@@ -1814,8 +1846,8 @@
       "valueKind": "array",
       "enumValues": [],
       "description": {
-        "en": "List the tool uses Claude Code blocks. Use it for files that hold API keys, secrets, or environment values: Claude Code excludes matching files from file discovery and search results, denies reads of them, and blocks the Edit and Write tools on the matching paths. Read and Edit deny rules apply to Claude's built-in file tools, to file commands Claude Code recognizes in Bash, such as cat, head, tail, and sed, and to the targets of Bash redirections such as > file and < file; they don't apply to a command that reads files without naming them, such as grep -r pattern ., or to arbitrary subprocesses, so for OS-level enforcement enable the sandbox.",
-        "zh": "List the tool uses Claude Code blocks. Use it for files that hold API keys, secrets, or environment values: Claude Code excludes matching files from file discovery and search results, denies reads of them, and blocks the Edit and Write tools on the matching paths. Read and Edit deny rules apply to Claude's built-in file tools, to file commands Claude Code recognizes in Bash, such as cat, head, tail, and sed, and to the targets of Bash redirections such as > file and < file; they don't apply to a command that reads files without naming them, such as grep -r pattern ., or to arbitrary subprocesses, so for OS-level enforcement enable the sandbox."
+        "en": "List the tool uses Claude Code blocks. Use it for files that hold API keys, secrets, or environment values: Claude Code excludes matching files from file discovery and search results, denies reads of them, and blocks the Edit and Write tools on the matching paths.",
+        "zh": "List the tool uses Claude Code blocks. Use it for files that hold API keys, secrets, or environment values: Claude Code excludes matching files from file discovery and search results, denies reads of them, and blocks the Edit and Write tools on the matching paths."
       }
     },
     {
@@ -3568,8 +3600,8 @@
       "valueKind": "boolean",
       "enumValues": [],
       "description": {
-        "en": "Accelerate mouse-wheel scroll speed during fast scrolls in fullscreen rendering. Set it to false for a constant scroll rate per wheel notch. Requires Claude Code v2.1.174 or later.",
-        "zh": "Accelerate mouse-wheel scroll speed during fast scrolls in fullscreen rendering. Set it to false for a constant scroll rate per wheel notch. Requires Claude Code v2.1.174 or later."
+        "en": "Accelerate mouse-wheel scroll speed during fast scrolls in fullscreen rendering. Set it to false for a constant scroll rate per wheel notch.",
+        "zh": "Accelerate mouse-wheel scroll speed during fast scrolls in fullscreen rendering. Set it to false for a constant scroll rate per wheel notch."
       }
     },
     {
@@ -3595,7 +3627,7 @@
       ],
       "scope": "Any file. A value there takes precedence over the Dynamic workflow size choice in /config, which Claude Code stores in ~/.claude.json, and Claude Code hides that row while a settings file sets the key.",
       "type": "string, one of:",
-      "default": "\"medium\"",
+      "default": "\"medium\", or \"small\" when you're signed in on a Pro plan with Claude Code v2.1.271 or later",
       "example": "{\n  \"workflowSizeGuideline\": \"small\"\n}",
       "valueKind": "string",
       "enumValues": [
@@ -3605,8 +3637,8 @@
         "large"
       ],
       "description": {
-        "en": "Set the agent count Claude aims for in the dynamic workflows it writes. Claude Code sends the value to Claude as advice, not an enforced cap: \"small\" asks for fewer than 5 agents, \"medium\" fewer than 15, and \"large\" fewer than 50. Choose \"small\" when you want to bound what a workflow spends. Requires Claude Code v2.1.219 or later.",
-        "zh": "Set the agent count Claude aims for in the dynamic workflows it writes. Claude Code sends the value to Claude as advice, not an enforced cap: \"small\" asks for fewer than 5 agents, \"medium\" fewer than 15, and \"large\" fewer than 50. Choose \"small\" when you want to bound what a workflow spends. Requires Claude Code v2.1.219 or later."
+        "en": "Set the agent count Claude aims for in the dynamic workflows it writes. Claude Code sends the value to Claude as advice, not an enforced cap: \"small\" asks for fewer than 5 agents, \"medium\" fewer than 10, and \"large\" fewer than 50. Choose \"small\" when you want to bound what a workflow spends. Requires Claude Code v2.1.219 or later.",
+        "zh": "Set the agent count Claude aims for in the dynamic workflows it writes. Claude Code sends the value to Claude as advice, not an enforced cap: \"small\" asks for fewer than 5 agents, \"medium\" fewer than 10, and \"large\" fewer than 50. Choose \"small\" when you want to bound what a workflow spends. Requires Claude Code v2.1.219 or later."
       }
     },
     {
@@ -4435,6 +4467,15 @@
       "description": {
         "en": "Time in milliseconds Claude Code waits for the AWS default credential provider chain to produce credentials before the request fails with AWS default-chain credential resolve timed out (default: 60000). Raise it when a step in your chain legitimately needs longer, such as a browser-based SSO sign-in with MFA through a wrapper like aws-vault. Applies wherever Claude Code signs with the default chain: Amazon Bedrock, Claude Platform on AWS, and the Mantle endpoint. Requires Claude Code v2.1.207 or later",
         "zh": "Claude Code 等待 AWS 默认凭证提供商链生成凭证的时间（毫秒），然后请求失败，显示 AWS default-chain credential resolve timed out（默认值：60000）。当链中的步骤合法需要更长时间时提高它，例如通过 aws-vault 等包装器进行基于浏览器的 SSO 登录和 MFA。适用于 Claude Code 使用默认链签名的任何地方：Amazon Bedrock、AWS 上的 Claude Platform 和 Mantle 端点。需要 Claude Code v2.1.207 或更高版本"
+      }
+    },
+    {
+      "key": "CLAUDE_CODE_BASH_EDIT_DIFF",
+      "example": "0",
+      "valueKind": "boolean-string",
+      "description": {
+        "en": "Set to 0 to turn off the diff of the files a Bash command changed, or 1 to record it in every permission mode. Takes precedence over the bashEditDiffEnabled setting. Requires Claude Code v2.1.269 or later",
+        "zh": "Set to 0 to turn off the diff of the files a Bash command changed, or 1 to record it in every permission mode. Takes precedence over the bashEditDiffEnabled setting. Requires Claude Code v2.1.269 or later"
       }
     },
     {
@@ -5594,7 +5635,7 @@
       "example": "1",
       "valueKind": "boolean-string",
       "description": {
-        "en": "Set to 1 for unattended sessions such as eval harnesses, CI jobs, or remote workers. Retries 429 and 529 capacity errors indefinitely instead of failing after CLAUDE_CODE_MAX_RETRIES attempts. Claude Code fails at once on a 429 that reports a spend limit or exhausted usage credits, even one from a gateway spend cap that resets on a schedule. Before v2.1.239, the watchdog retried these indefinitely. The watchdog backs off up to 5 minutes between attempts, or until the limit resets when the response carries a rate-limit reset time, so a session that hits a usage limit waits out the remaining window. On v2.1.199 or later it also raises the default retry count for other transient errors, such as server errors, timeouts, and dropped connections, to 300, roughly three hours of backoff, and removes the cap of 15 on CLAUDE_CODE_MAX_RETRIES if you set that variable explicitly. Requires Claude Code v2.1.186 or later",
+        "en": "Set to 1 for unattended sessions such as eval harnesses, CI jobs, or remote workers. Retries 429 and 529 capacity errors indefinitely instead of failing after CLAUDE_CODE_MAX_RETRIES attempts. Claude Code fails at once when a standard-speed request gets a 429 that reports a spend limit or exhausted usage credits, even one from a gateway spend cap that resets on a schedule. Before v2.1.239, the watchdog retried these indefinitely. For fast mode requests, see Handle rate limits. The watchdog backs off up to 5 minutes between attempts, or until the limit resets when the response carries a rate-limit reset time, so a session that hits a usage limit waits out the remaining window. On v2.1.199 or later it also raises the default retry count for other transient errors, such as server errors, timeouts, and dropped connections, to 300, roughly three hours of backoff, and removes the cap of 15 on CLAUDE_CODE_MAX_RETRIES if you set that variable explicitly. Requires Claude Code v2.1.186 or later",
         "zh": "对于无人值守的会话（如 eval 工具、CI 作业或远程工作者），设置为 1。重试 429 和 529 容量错误无限期而不是在 CLAUDE_CODE_MAX_RETRIES 尝试后失败。Claude Code 在报告支出限制或耗尽使用信用的 429 上立即失败，即使来自 网关支出上限 按计划重置的。在 v2.1.239 之前，监视狗无限期重试这些。监视狗在尝试之间退避最多 5 分钟，或直到限制重置（当响应携带速率限制重置时间时），因此达到使用限制的会话等待剩余窗口。在 v2.1.199 或更高版本上，它也为其他瞬时错误（如服务器错误、超时和丢弃的连接）提高默认重试计数为 300，大约三小时的退避，如果您显式设置该变量，则删除 CLAUDE_CODE_MAX_RETRIES 上的 15 上限。需要 Claude Code v2.1.186 或更高版本"
       }
     },
@@ -5648,7 +5689,7 @@
       "example": "300000",
       "valueKind": "number-string",
       "description": {
-        "en": "Override the time budget in milliseconds for SessionEnd hooks. Applies to session exit, /clear, and switching sessions via interactive /resume. By default the budget is 1.5 seconds, automatically raised to the highest per-hook timeout configured in settings files, up to 60 seconds. Timeouts on plugin-provided hooks do not raise the budget",
+        "en": "Override the time budget in milliseconds for SessionEnd hooks. The value is also the timeout for each hook that sets no timeout of its own. Applies to session exit, /clear, and switching sessions via interactive /resume. By default the budget is 1.5 seconds, automatically raised to the highest per-hook timeout configured in settings files, up to 60 seconds. Timeouts on plugin-provided hooks do not raise the budget",
         "zh": "覆盖 SessionEnd hooks 的时间预算（毫秒）。适用于会话退出、/clear 和通过交互式 /resume 切换会话。默认情况下预算为 1.5 秒，自动提高到设置文件中配置的最高每个 hook timeout，最多 60 秒。插件提供的 hooks 上的超时不会提高预算"
       }
     },
@@ -5810,7 +5851,7 @@
       "example": "1",
       "valueKind": "boolean-string",
       "description": {
-        "en": "Set to 1 to strip credentials from subprocess environments (Bash tool, hooks, MCP stdio servers): Anthropic and cloud provider credentials, any other variable that Claude Code recognizes as a credential, and credentials embedded in package registry URLs. The parent Claude process keeps these credentials for API calls, but child processes cannot read them, reducing exposure to prompt injection attacks that attempt to exfiltrate secrets via shell expansion. On Linux, this also runs Bash subprocesses in an isolated PID namespace so they cannot read host process environments via /proc; as a side effect, ps, pgrep, and kill cannot see or signal host processes. claude-code-action sets this automatically when allowed_non_write_users is configured",
+        "en": "Set to 1 to strip credentials from subprocess environments (Bash tool, hooks, MCP stdio servers): Anthropic and cloud provider credentials, any other variable that Claude Code recognizes as a credential, and credentials embedded in package registry URLs. The parent Claude process keeps these credentials for API calls, but child processes cannot read them, reducing exposure to prompt injection attacks that attempt to exfiltrate secrets via shell expansion. On v2.1.251 or later, the scrub also removes Claude Code's own configuration-store pointer variables (such as CLAUDE_CONFIG_DIR), so a child process cannot locate a relocated configuration directory. Leave the scrub unset if a subprocess needs these variables. On Linux, this also runs Bash subprocesses in an isolated PID namespace so they cannot read host process environments via /proc; as a side effect, ps, pgrep, and kill cannot see or signal host processes. claude-code-action sets this automatically when allowed_non_write_users is configured",
         "zh": "设置为 1 以从子进程环境中删除凭证（Bash 工具、hooks、MCP stdio 服务器）：Anthropic 和云提供商凭证、Claude Code 识别为凭证的任何其他变量以及包含在包注册表 URL 中的凭证。父 Claude 进程保留这些凭证用于 API 调用，但子进程无法读取它们，减少了试图通过 shell 扩展窃取秘密的提示注入攻击的暴露。在 Linux 上，这也在隔离的 PID 命名空间中运行 Bash 子进程，以便它们无法通过 /proc 读取主机进程环境；作为副作用，ps、pgrep 和 kill 无法看到或信号主机进程。claude-code-action 在配置 allowed_non_write_users 时自动设置此项"
       }
     },
@@ -5837,7 +5878,7 @@
       "example": "1",
       "valueKind": "boolean-string",
       "description": {
-        "en": "Set to 1 to download your enabled claude.ai skills into ~/.claude/skills/synced/ and resync every 10 minutes. Before it runs the first query, Claude Code waits up to CLAUDE_CODE_SYNC_SKILLS_WAIT_TIMEOUT_MS for the list of your skills. The downloads themselves finish in the background, and Claude waits for a skill's download when it invokes that skill. The synced folder name is reserved for this download. Before v2.1.227, the skills downloaded into ~/.claude/skills/ directly. Applies only in non-interactive mode with the -p flag. Requires claude.ai authentication. Claude Code on the web sessions receive your enabled claude.ai skills automatically; you don't need to set this there. Claude Code applies extra rules to the downloaded skills, such as not running their ! commands on your machine",
+        "en": "Set to 1 to download your enabled claude.ai skills into ~/.claude/skills/synced/ and resync every 10 minutes. Before it runs the first query, Claude Code waits up to CLAUDE_CODE_SYNC_SKILLS_WAIT_TIMEOUT_MS for the list of your skills. The downloads themselves finish in the background, and Claude waits for a skill's download when it invokes that skill. The synced folder name is reserved for this download. Before v2.1.227, the skills downloaded into ~/.claude/skills/ directly. Applies only in non-interactive mode with the -p flag. Requires claude.ai authentication. Cloud sessions receive your enabled claude.ai skills automatically; you don't need to set this there. Claude Code applies extra rules to the downloaded skills, such as not running their ! commands on your machine",
         "zh": "设置为 1 以将您启用的 claude.ai skills 下载到 ~/.claude/skills/synced/ 并每 10 分钟重新同步一次。在运行第一个查询之前，Claude Code 等待最多 CLAUDE_CODE_SYNC_SKILLS_WAIT_TIMEOUT_MS 以获取您的 skills 列表。下载本身在后台完成，Claude 在调用 skill 时等待 skill 的下载。synced 文件夹名称是 为此下载保留的。在 v2.1.227 之前，skills 直接下载到 ~/.claude/skills/ 中。仅适用于非交互模式，使用 -p 标志。需要 claude.ai 身份验证。Claude Code on the web 会话自动接收您启用的 claude.ai skills；您不需要在那里设置此项。Claude Code 对下载的 skills 应用 额外规则，例如不在您的机器上运行它们的 ! 命令"
       }
     },
@@ -6711,7 +6752,7 @@
       "valueKind": "boolean-string",
       "description": {
         "en": "Set to true to tag OpenTelemetry metrics and events with vcs.* attributes identifying the session's repository (default: excluded). Requires Claude Code v2.1.269 or later. See Repository attributes",
-        "zh": "Set to true to tag OpenTelemetry metrics and events with vcs.* attributes identifying the session's repository (default: excluded). Requires Claude Code v2.1.269 or later. See Repository attributes"
+        "zh": "设置为 true 以使用 vcs.* 属性标记 OpenTelemetry 指标和事件，识别会话的存储库（默认值：排除）。需要 Claude Code v2.1.269 或更高版本。请参阅 存储库属性"
       }
     },
     {
