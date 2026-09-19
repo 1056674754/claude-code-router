@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import type { ApiKeyConfig, AppConfig, ProfileConfig, RequestRouteTraceChange, RouterFallbackConfig } from "@ccr/core/contracts/app";
 import {
   createSseErrorDetector,
@@ -1007,8 +1007,16 @@ export class GatewayRequestPipeline {
         : clientResponseBody;
       const responseStreams = uniqueStreams([upstreamBody, patchedResponseBody, multiAgentResponseBody, hostedWebSearchResponseBody, responseBody, clientResponseBody, responseToClient]);
       const sampler = createBodySampler();
-      const sseErrorDetector = createSseErrorDetector(responseHeaders.get("content-type") ?? undefined);
+      const responseContentType = responseHeaders.get("content-type") ?? "";
+      const sseErrorDetector = createSseErrorDetector(responseContentType);
       let streamDetectedError: string | undefined;
+      const sseTailGuard = responseProtocol === "anthropic_messages" && responseContentType.includes("text/event-stream")
+        ? createAnthropicStreamErrorTailGuard({
+          clientResponse: response,
+          detectedError: () => streamDetectedError,
+          isClientDisconnected: () => clientDisconnected
+        })
+        : undefined;
       let upstreamStreamEnded = false;
       let logRecorded = false;
       const writeStreamLog = (error?: string) => {
@@ -1058,6 +1066,12 @@ export class GatewayRequestPipeline {
             0
           )
         }));
+        // Terminate the client's stream properly so it can classify the failure
+        // and retry, instead of hanging on a socket that will never finish.
+        sseTailGuard?.writeTerminalError();
+        if (!clientDisconnected && !response.destroyed && !response.writableEnded) {
+          response.end();
+        }
       };
       for (const stream of responseStreams) {
         stream.on("error", onResponseStreamError);
@@ -1094,7 +1108,11 @@ export class GatewayRequestPipeline {
         onClientDisconnect();
         return;
       }
-      responseToClient.pipe(response);
+      if (sseTailGuard) {
+        responseToClient.pipe(sseTailGuard).pipe(response);
+      } else {
+        responseToClient.pipe(response);
+      }
     }
 
   async replayContextArchive(input: ContextArchiveReplayInput): Promise<ContextArchiveReplayResult> {
@@ -1246,6 +1264,48 @@ function profileDeniedModel(
   return modelToAuthorize && !isModelAllowedForProfile(config, profile, modelToAuthorize)
     ? modelToAuthorize
     : undefined;
+}
+
+// A mid-stream upstream failure must end the client's SSE stream with the
+// protocol's terminal error frame. Clients classify failures from that frame:
+// a stream that just stops reads as a completed-but-short answer, so the
+// client never retries — the conversation simply dies.
+function createAnthropicStreamErrorTailGuard(input: {
+  clientResponse: ServerResponse;
+  detectedError: () => string | undefined;
+  isClientDisconnected: () => boolean;
+}): (Transform & { writeTerminalError: () => void }) | undefined {
+  const { clientResponse } = input;
+  let terminalSeen = false;
+  let injected = false;
+  let tail = "";
+  const terminalFramePattern =
+    /(^|\n)event: (done|error|message_stop|response\.(completed|error|failed|incomplete))( |\n|$)/;
+  const writeTerminalError = (): void => {
+    if (terminalSeen || injected || input.isClientDisconnected() || clientResponse.destroyed || clientResponse.writableEnded) {
+      return;
+    }
+    injected = true;
+    const detail = (input.detectedError() ?? "Upstream stream ended before the response completed.").slice(0, 400);
+    const type = /overloaded/i.test(detail) ? "overloaded_error" : "api_error";
+    clientResponse.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: detail } })}\n\n`);
+  };
+  const guard = Object.assign(
+    new Transform({
+      transform(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null, data?: Buffer) => void) {
+        const text = tail + chunk.toString("utf8");
+        terminalSeen ||= terminalFramePattern.test(text);
+        tail = text.slice(-160);
+        callback(null, chunk);
+      },
+      flush(callback: (error?: Error | null, data?: Buffer) => void) {
+        writeTerminalError();
+        callback();
+      }
+    }),
+    { writeTerminalError }
+  );
+  return guard;
 }
 
 function profileAllowedRouteFallback(
