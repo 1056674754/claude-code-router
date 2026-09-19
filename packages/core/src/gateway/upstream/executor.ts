@@ -10,6 +10,7 @@ import { modelRegistryForConfig, normalizeRouteSelector, parseProviderModelSelec
 import { requestProtocolForPath } from "@ccr/core/routing/protocol-endpoints";
 import { resolveConfiguredProviderModelSelector, resolveUniqueConfiguredProviderModelSelector } from "@ccr/core/routing/model-resolution";
 import { estimateLimitUsage } from "@ccr/core/gateway/limits/window-limiter";
+import { isContentPolicyRejection, isContentPolicyStatus, readFailedAttemptBody } from "@ccr/core/gateway/upstream/content-policy";
 import { providerCredentialLimitState, readProviderCredentialCooldown, recordProviderCredentialOutcome } from "@ccr/core/providers/credential-pool";
 import { clampNumber } from "@ccr/core/gateway/internal/collections";
 import { isRecord, stringValue } from "@ccr/core/gateway/internal/value";
@@ -524,6 +525,55 @@ export async function fetchUpstreamWithFallback(input: {
           await delay(delayMs, input.signal);
         }
         continue;
+      }
+
+      // Content-policy rejections ride 4xx, but they are a property of THIS
+      // provider's filter rather than of the request: a standby provider with
+      // a different filter can serve the same request, so hop when the plan
+      // has a next target.
+      if (
+        hasNextAttempt &&
+        !shouldFallbackAfterStatus(response.status, fallbackMode) &&
+        isContentPolicyStatus(response.status)
+      ) {
+        const bodyText = await readFailedAttemptBody(response);
+        if (isContentPolicyRejection(response.status, bodyText)) {
+          const nextAttempt = attempts[index + 1];
+          const crossProviderHop = nextAttempt?.target?.kind === "provider" &&
+            attempt.target?.kind === "provider" &&
+            providerRuntimeId(nextAttempt.target.provider) !== providerRuntimeId(attempt.target.provider);
+          const delayMs = retryDelayAfterNetworkError(failedAttempts.length);
+          input.trace?.capture({
+            attempt: attemptNumber,
+            durationMs: Date.now() - attemptStartedAt,
+            kind: "outcome",
+            name: "upstream.attempt.outcome",
+            outcome: {
+              fallbackReason: `content-policy:${response.status}`,
+              retryDelayMs: delayMs,
+              statusCode: response.status
+            },
+            phase: "outcome",
+            startedAtMs: attemptStartedAt,
+            status: "error",
+            target: {
+              ...(attempt.model ? { model: attempt.model } : {}),
+              ...(attemptProvider ? { provider: attemptProvider } : {})
+            }
+          });
+          failedAttempts.push({
+            credentialChain: attempt.credentialChain,
+            credentialIds: attempt.credentialIds,
+            delayMs,
+            model: attempt.model,
+            statusCode: response.status
+          });
+          recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+          if (delayMs > 0) {
+            await delay(delayMs, input.signal);
+          }
+          continue;
+        }
       }
 
       // Rate-limit hold: once the plan's attempts are exhausted, keep the
