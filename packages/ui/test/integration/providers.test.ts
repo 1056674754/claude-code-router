@@ -175,6 +175,8 @@ test("provider save keeps hand-written fields the dialog cannot edit", () => {
     billing: { currency: "USD" },
     extraBody: { default: { reasoning_effort: "high" } },
     extraHeaders: { "x-tenant": "acme" },
+    fallbackProviders: ["Ctyun"],
+    maxConcurrency: 6,
     models: ["model-a"],
     name: "example",
     provider: "openai",
@@ -186,6 +188,8 @@ test("provider save keeps hand-written fields the dialog cannot edit", () => {
   // section edits them, so they round-trip through the draft instead.
   assert.deepEqual(providerManualFieldsForSave(existing), {
     billing: existing.billing,
+    fallbackProviders: ["Ctyun"],
+    maxConcurrency: 6,
     provider: existing.provider,
     transformer: existing.transformer
   });

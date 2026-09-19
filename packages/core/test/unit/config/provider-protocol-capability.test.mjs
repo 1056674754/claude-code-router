@@ -97,3 +97,35 @@ test("protocol without any base URL yields no synthesized capability", async () 
 
   assert.equal(providers[0].capabilities, undefined);
 });
+
+test("provider fallbackProviders and maxConcurrency survive config parsing", async () => {
+  const { parseProvidersForTest } = await import("@ccr/core/config/config.ts");
+  const providers = parseProvidersForTest([
+    {
+      fallbackProviders: ["Ctyun"],
+      maxConcurrency: 6,
+      models: ["glm-5.3-flash"],
+      name: "Zhipu GLM"
+    },
+    {
+      fallback_providers: ["Zhipu GLM"],
+      max_concurrency: "3",
+      models: ["glm-5.3-flash"],
+      name: "Ctyun"
+    },
+    {
+      fallbackProviders: ["  "],
+      maxConcurrency: -2,
+      models: ["glm-5.3-flash"],
+      name: "Broken"
+    }
+  ]);
+
+  assert.deepEqual(providers?.[0]?.fallbackProviders, ["Ctyun"]);
+  assert.equal(providers?.[0]?.maxConcurrency, 6);
+  assert.deepEqual(providers?.[1]?.fallbackProviders, ["Zhipu GLM"]);
+  assert.equal(providers?.[1]?.maxConcurrency, 3);
+  // Garbage values normalize to absent so the save path stays clean.
+  assert.equal(providers?.[2]?.fallbackProviders, undefined);
+  assert.equal(providers?.[2]?.maxConcurrency, undefined);
+});

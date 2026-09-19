@@ -168,6 +168,11 @@ export type GatewayProviderConfig = {
   billing?: unknown;
   capabilities?: GatewayProviderCapability[];
   credentials?: ProviderCredentialConfig[];
+  // Standby providers for this upstream plan: when a request routed to this
+  // provider fails with a retryable upstream failure (429/5xx/timeout), the
+  // gateway retries the SAME model id on these providers, in order. Bound to
+  // the provider (the plan), not to any client slot or route rule.
+  fallbackProviders?: string[];
   // Optional per-provider upstream concurrency cap: excess requests queue at
   // the gateway (abort-aware) instead of tripping upstream risk control.
   maxConcurrency?: number;

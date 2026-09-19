@@ -409,6 +409,109 @@ test("execution planner includes primary and de-duplicated fallback attempts", (
   ]);
 });
 
+test("provider-declared standby chain appends cross-provider attempts and replaces retry padding", () => {
+  const modelRegistry = new ModelRegistry({
+    Providers: [
+      { fallbackProviders: ["Ctyun"], models: ["glm-5.3-flash"], name: "Zhipu GLM" },
+      { models: ["glm-5.3-flash"], name: "Ctyun" }
+    ],
+    Router: { builtInRules: {}, fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] }
+  });
+
+  const plan = createRouteExecutionPlan({
+    bodyModel: "Zhipu GLM/glm-5.3-flash",
+    fallback: { mode: "retry", models: [], retryCount: 2 },
+    hasRequestBody: true,
+    modelRegistry
+  });
+
+  assert.deepEqual(plan.attempts.map((attempt) => attempt.model), [
+    "Zhipu GLM/glm-5.3-flash",
+    "Ctyun/glm-5.3-flash"
+  ]);
+  assert.equal(plan.attempts[1].target?.provider?.name, "Ctyun");
+  assert.equal(plan.attempts[1].target?.model, "glm-5.3-flash");
+});
+
+test("provider standby chain dedupes against explicit model-chain entries", () => {
+  const modelRegistry = new ModelRegistry({
+    Providers: [
+      { fallbackProviders: ["Ctyun"], models: ["glm-5.3-flash"], name: "Zhipu GLM" },
+      { models: ["glm-5.3-flash"], name: "Ctyun" }
+    ],
+    Router: { builtInRules: {}, fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] }
+  });
+
+  const plan = createRouteExecutionPlan({
+    bodyModel: "Zhipu GLM/glm-5.3-flash",
+    fallback: { mode: "model-chain", models: ["Ctyun/glm-5.3-flash"], retryCount: 0 },
+    hasRequestBody: true,
+    modelRegistry
+  });
+
+  assert.deepEqual(plan.attempts.map((attempt) => attempt.model), [
+    "Zhipu GLM/glm-5.3-flash",
+    "Ctyun/glm-5.3-flash"
+  ]);
+});
+
+test("standby declarations that do not serve the model are ignored", () => {
+  const modelRegistry = new ModelRegistry({
+    Providers: [
+      { fallbackProviders: ["Ctyun"], models: ["glm-5.3-flash"], name: "Zhipu GLM" },
+      { models: ["other-model"], name: "Ctyun" }
+    ],
+    Router: { builtInRules: {}, fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] }
+  });
+
+  const plan = createRouteExecutionPlan({
+    bodyModel: "Zhipu GLM/glm-5.3-flash",
+    fallback: { mode: "retry", models: [], retryCount: 1 },
+    hasRequestBody: true,
+    modelRegistry
+  });
+
+  assert.equal(plan.attempts.length, 2);
+  assert.ok(plan.attempts.every((attempt) => attempt.model === "Zhipu GLM/glm-5.3-flash"));
+});
+
+test("self-referencing standby declarations are ignored", () => {
+  const modelRegistry = new ModelRegistry({
+    Providers: [
+      { fallbackProviders: ["Zhipu GLM"], models: ["glm-5.3-flash"], name: "Zhipu GLM" }
+    ],
+    Router: { builtInRules: {}, fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] }
+  });
+
+  const plan = createRouteExecutionPlan({
+    bodyModel: "Zhipu GLM/glm-5.3-flash",
+    fallback: { mode: "retry", models: [], retryCount: 1 },
+    hasRequestBody: true,
+    modelRegistry
+  });
+
+  assert.equal(plan.attempts.length, 2);
+});
+
+test("mode off keeps plans single-attempt even with standby declarations", () => {
+  const modelRegistry = new ModelRegistry({
+    Providers: [
+      { fallbackProviders: ["Ctyun"], models: ["glm-5.3-flash"], name: "Zhipu GLM" },
+      { models: ["glm-5.3-flash"], name: "Ctyun" }
+    ],
+    Router: { builtInRules: {}, fallback: { mode: "off", models: [], retryCount: 0 }, rules: [] }
+  });
+
+  const plan = createRouteExecutionPlan({
+    bodyModel: "Zhipu GLM/glm-5.3-flash",
+    fallback: { mode: "off", models: [], retryCount: 0 },
+    hasRequestBody: true,
+    modelRegistry
+  });
+
+  assert.equal(plan.attempts.length, 1);
+});
+
 test("failure classifier keeps retry and model-chain policies explicit", () => {
   assert.deepEqual(classifyRouteFailure(400, "retry"), {
     failureClass: "client",

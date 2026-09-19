@@ -1443,6 +1443,8 @@ function parseProviders(value: unknown): GatewayProviderConfig[] | undefined {
         capabilities: parseProviderCapabilities(item.capabilities)
           ?? parseProviderProtocolCapability(item),
         credentials: parseProviderCredentials(item.credentials ?? item.keys ?? item.apiKeys),
+        fallbackProviders: parseStringArray(item.fallbackProviders ?? item.fallback_providers),
+        maxConcurrency: readPositiveNumber(item.maxConcurrency ?? item.max_concurrency),
         extraBody: item.extraBody,
         extraHeaders: item.extraHeaders ?? item.extra_headers ?? item.headers,
         icon: readString(item.icon),
@@ -3812,6 +3814,11 @@ function parseProfileRouting(value: unknown, _agent: ProfileConfig["agent"]): Pr
 
 function readBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function readPositiveNumber(value: unknown): number | undefined {
+  const parsed = readNumber(value);
+  return parsed !== undefined && parsed > 0 ? parsed : undefined;
 }
 
 function readProfileAppPath(item: Record<string, unknown>, agent: ProfileConfig["agent"]): string | undefined {

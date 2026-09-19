@@ -479,7 +479,16 @@ export async function fetchUpstreamWithFallback(input: {
       });
 
       if (hasNextAttempt && shouldFallbackAfterStatus(response.status, fallbackMode)) {
-        const delayMs = retryDelayAfterStatus(response.headers, failedAttempts.length);
+        // A standby hop must not wait out the failing provider's retry-after:
+        // that header describes when the SAME provider recovers, and the point
+        // of handing off is to not wait for it.
+        const nextAttempt = attempts[index + 1];
+        const crossProviderHop = nextAttempt?.target?.kind === "provider" &&
+          attempt.target?.kind === "provider" &&
+          providerRuntimeId(nextAttempt.target.provider) !== providerRuntimeId(attempt.target.provider);
+        const delayMs = crossProviderHop
+          ? retryDelayAfterNetworkError(failedAttempts.length)
+          : retryDelayAfterStatus(response.headers, failedAttempts.length);
         input.trace?.capture({
           attempt: attemptNumber,
           durationMs: Date.now() - attemptStartedAt,

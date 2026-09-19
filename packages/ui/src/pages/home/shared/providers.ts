@@ -2005,7 +2005,7 @@ export function providerCapabilitiesForSave(
 
 export type ProviderManualFields = Pick<
   GatewayProviderConfig,
-  "billing" | "provider" | "transformer"
+  "billing" | "fallbackProviders" | "maxConcurrency" | "provider" | "transformer"
 >;
 
 /**
@@ -2014,11 +2014,12 @@ export type ProviderManualFields = Pick<
  * Saving rebuilds the provider from the dialog draft, so a field the form does
  * not know about is dropped unless it is carried over explicitly. These fields
  * only ever come from a hand-written config, and losing them is silent: the
- * provider keeps working, just without the billing metadata or transformers it
- * was configured with.
+ * provider keeps working, just without the billing metadata, transformers, or
+ * concurrency cap it was configured with.
  *
  * `extraBody` and `extraHeaders` are not listed here — the Advanced settings
  * section edits them, so they round-trip through the draft instead.
+ * `protocolDetectionMode` is likewise edited by the dialog, so it round-trips.
  *
  * The legacy `apiKey` / `apikey` / `baseUrl` / `baseurl` aliases are deliberately
  * not carried over — the form writes the canonical `api_key` / `api_base_url`,
@@ -2032,6 +2033,10 @@ export function providerManualFieldsForSave(
   }
   const preserved: ProviderManualFields = {
     billing: existingProvider.billing,
+    fallbackProviders: existingProvider.fallbackProviders
+      ? [...existingProvider.fallbackProviders]
+      : undefined,
+    maxConcurrency: existingProvider.maxConcurrency,
     provider: existingProvider.provider,
     transformer: existingProvider.transformer
   };
