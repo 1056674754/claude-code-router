@@ -149,7 +149,9 @@ export function formatProviderAccountMeterValue(
   meter: ProviderAccountMeter,
   translate: (value: string) => string = (value) => value
 ): string {
-  const value = meter.remaining ?? meter.used ?? meter.limit;
+  // A percent meter's limit is only its scale (100), never a remaining amount:
+  // falling back to it would render an unknown quota as a healthy 100%.
+  const value = meter.remaining ?? meter.used ?? (meter.unit.trim() === "%" ? undefined : meter.limit);
   if (value === undefined) {
     return "-";
   }

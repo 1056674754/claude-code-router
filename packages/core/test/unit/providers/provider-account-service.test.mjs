@@ -104,6 +104,49 @@ test("Grok subscription connector maps access status payload", async (t) => {
   assert.equal(result.meters.find((meter) => meter.id === "grok_subscription_access")?.remaining, 100);
 });
 
+test("account connector rejects an HTTP 200 failure envelope instead of faking full quota", async (t) => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ code: 500, msg: "Internal service error", success: false }), {
+      headers: { "content-type": "application/json" },
+      status: 200
+    });
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const connector = {
+    auth: "provider-api-key-raw",
+    endpoint: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+    headers: { "Accept-Language": "en-US,en" },
+    mapping: {
+      meters: [
+        {
+          id: "five_hour_quota",
+          kind: "quota",
+          label: "5h quota",
+          limit: 100,
+          remaining: "100 - $.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].percentage",
+          unit: "%",
+          used: "$.data.limits[?(@.type==\"TOKENS_LIMIT\" && @.unit==3)].percentage",
+          window: "5h"
+        }
+      ]
+    },
+    type: "http-json"
+  };
+
+  await assert.rejects(
+    () => testProviderAccountConnector({
+      apiKey: "zhipu-key",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      connector,
+      providerName: "Zhipu GLM"
+    }),
+    /Internal service error/
+  );
+});
+
 test("webcontent-json connector uses browser-session handler without provider API key", async (t) => {
   let captured;
   setProviderAccountWebContentFetchHandler(async (request) => {

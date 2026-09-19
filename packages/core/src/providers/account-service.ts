@@ -2008,11 +2008,41 @@ async function readJsonResponse(response: Response): Promise<unknown> {
   if (!responseLooksJson(contentType, text)) {
     throw new Error(`Account endpoint returned non-JSON response${contentType ? ` (${contentType.split(";")[0]})` : ""}.`);
   }
+  let payload: unknown;
   try {
-    return JSON.parse(text) as unknown;
+    payload = JSON.parse(text) as unknown;
   } catch {
     throw new Error("Account endpoint returned malformed JSON.");
   }
+  const failure = jsonFailureEnvelopeMessage(payload);
+  if (failure) {
+    throw new Error(`Account endpoint reported an error: ${failure}.`);
+  }
+  return payload;
+}
+
+// Some upstreams answer a failed request with HTTP 200 and a failure envelope —
+// zhipu's monitor endpoint returns {"code":500,"msg":"Internal service error",
+// "success":false} while the service is down. Reading that as a payload yields
+// degenerate meters that keep only their mapped literal `limit`, so a provider
+// whose quota is unknown renders as healthy at 100%.
+function jsonFailureEnvelopeMessage(payload: unknown): string | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const message = readString(payload.msg) || readString(payload.message) || readString(payload.detail);
+  if (readBoolean(payload.success) === false) {
+    return message ?? "endpoint reported an unsuccessful result";
+  }
+  const data = payload.data;
+  if (isRecord(data) || Array.isArray(data)) {
+    return undefined;
+  }
+  const code = normalizeNumber(payload.code);
+  if (code !== undefined && code >= 400) {
+    return message ? `${message} (code ${code})` : `endpoint returned error code ${code}`;
+  }
+  return undefined;
 }
 
 function responseLooksJson(contentType: string, text: string): boolean {

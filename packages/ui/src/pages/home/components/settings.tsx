@@ -3416,7 +3416,8 @@ function trayBalanceMeterProgress(meter: ProviderAccountMeter): number {
       return Math.max(0, Math.min(1, 1 - meter.used / 100));
     }
   }
-  const rawValue = meter.remaining ?? meter.limit ?? meter.used ?? 0;
+  // A percent meter's limit is only its scale (100), never a remaining amount.
+  const rawValue = meter.remaining ?? (meter.unit.trim() === "%" ? undefined : meter.limit) ?? meter.used ?? 0;
   return rawValue > 0 ? 1 : 0;
 }
 
