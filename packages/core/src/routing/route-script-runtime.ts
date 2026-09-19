@@ -23,8 +23,12 @@ const maxPendingRequests = 64;
 const circuitFailureThreshold = 3;
 const circuitWindowMs = 60_000;
 const circuitOpenMs = 30_000;
-const workerOldGenerationMb = 64;
-const workerYoungGenerationMb = 16;
+// Route scripts receive the full request body, and near-full-context
+// conversations serialize to tens of MB; the parsed clone needs several times
+// that on the heap, so a small limit OOMs the worker exactly when conversations
+// are largest (taking /compact and every turn down with a 400).
+const workerOldGenerationMb = 1024;
+const workerYoungGenerationMb = 32;
 
 export type RouteScriptExecutionResult = {
   durationMs: number;
