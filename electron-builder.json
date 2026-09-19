@@ -48,10 +48,7 @@
     "entitlementsInherit": "build/entitlements.mac.inherit.plist",
     "notarize": true,
     "target": ["dmg", "zip"],
-    "artifactName": "Claude-Code-Router_${version}.${ext}",
-    "extendInfo": {
-      "LSUIElement": true
-    }
+    "artifactName": "Claude-Code-Router_${version}.${ext}"
   },
   "afterSign": "build/verify-macos-notarization.cjs",
   "win": {
