@@ -323,8 +323,12 @@ app.on("before-quit", () => {
   windowsManager.broadcast(IPC_CHANNELS.appBeforeQuit);
 });
 
+// Closing the main window hides it instead of destroying it on every desktop
+// platform: the tray keeps running, the Dock tile keeps its indicator, and
+// the popover stays openable. A real quit (app.quit / Cmd+Q) sets
+// appIsQuitting first, which lets the window close for real.
 function shouldHideMainWindowOnClose(): boolean {
-  return process.platform === "win32" && !appIsQuitting;
+  return !appIsQuitting;
 }
 
 function fitWindowSize(preferred: number, minimum: number, available: number): number {
