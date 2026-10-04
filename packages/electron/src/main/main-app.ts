@@ -108,6 +108,9 @@ function startPrimaryInstance(): void {
     prepareAndQuit();
   });
 
+  // Closing the main window on macOS destroys it (see
+  // shouldHideMainWindowOnClose) and must NOT end the process: the tray icon,
+  // the popover, and the gateway all keep running until an explicit quit.
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
       app.quit();

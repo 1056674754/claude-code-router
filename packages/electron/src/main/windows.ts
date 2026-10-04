@@ -323,12 +323,14 @@ app.on("before-quit", () => {
   windowsManager.broadcast(IPC_CHANNELS.appBeforeQuit);
 });
 
-// Closing the main window hides it instead of destroying it on every desktop
-// platform: the tray keeps running, the Dock tile keeps its indicator, and
-// the popover stays openable. A real quit (app.quit / Cmd+Q) sets
-// appIsQuitting first, which lets the window close for real.
+// On Windows the window is hidden so the app keeps running without a taskbar
+// entry. On macOS it is destroyed for real: a hidden window still belongs to
+// the Space it was last on, and activating the app (which showing the tray
+// popover does) makes macOS switch to that Space — yanking the user off their
+// current desktop. A destroyed window leaves nothing to switch to, and the
+// app stays alive because window-all-closed does not quit on darwin.
 function shouldHideMainWindowOnClose(): boolean {
-  return !appIsQuitting;
+  return process.platform === "win32" && !appIsQuitting;
 }
 
 function fitWindowSize(preferred: number, minimum: number, available: number): number {
