@@ -538,10 +538,6 @@ export async function fetchUpstreamWithFallback(input: {
       ) {
         const bodyText = await readFailedAttemptBody(response);
         if (isContentPolicyRejection(response.status, bodyText)) {
-          const nextAttempt = attempts[index + 1];
-          const crossProviderHop = nextAttempt?.target?.kind === "provider" &&
-            attempt.target?.kind === "provider" &&
-            providerRuntimeId(nextAttempt.target.provider) !== providerRuntimeId(attempt.target.provider);
           const delayMs = retryDelayAfterNetworkError(failedAttempts.length);
           input.trace?.capture({
             attempt: attemptNumber,

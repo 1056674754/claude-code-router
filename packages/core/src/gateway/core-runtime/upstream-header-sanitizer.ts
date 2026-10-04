@@ -21,7 +21,6 @@ type ProviderPluginRequestInput = {
   request?: {
     body?: unknown;
     id?: string;
-    body?: unknown;
     headers?: Record<string, string | string[] | undefined>;
   };
   targetProviderConfig?: {

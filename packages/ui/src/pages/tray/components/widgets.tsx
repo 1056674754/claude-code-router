@@ -227,7 +227,6 @@ function TokenActivityGrid({
   const gridFrameSize = useMeasuredElementSize(gridFrameRef);
   const dayLabels = [t("M"), "", t("W"), "", t("F"), "", ""];
   const cellGap = 3;
-  const maxCellPitch = 24;
   const labelColumnWidth = 14;
   const cellSize = activityGridCellSize({
     availableHeight: gridFrameSize.height,
