@@ -288,7 +288,9 @@ async function analyzeVision(args: Record<string, unknown>): Promise<string> {
     let usageScheduled = false;
     try {
       response = await fetch(resolveChatCompletionsUrl(baseUrl), {
-        body: JSON.stringify({ model, messages }),
+        // Without an explicit cap the provider default (1024) can be spent
+        // entirely on reasoning_content, truncating before any answer text.
+        body: JSON.stringify({ max_tokens: 8192, model, messages }),
         headers: {
           ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
           "content-type": "application/json"
@@ -1036,7 +1038,7 @@ function extractResponseText(value: unknown): string | undefined {
   const first = isRecord(choices[0]) ? choices[0] : undefined;
   const message = isRecord(first?.message) ? first.message : undefined;
   const content = message?.content;
-  if (typeof content === "string") {
+  if (typeof content === "string" && content.trim()) {
     return content;
   }
   if (Array.isArray(content)) {
@@ -1044,7 +1046,18 @@ function extractResponseText(value: unknown): string | undefined {
       .map((item) => isRecord(item) ? readString(item.text) : undefined)
       .filter((item): item is string => Boolean(item))
       .join("\n");
-    return text || undefined;
+    if (text) {
+      return text;
+    }
+  }
+  // Reasoning models can exhaust the budget on reasoning_content and return an
+  // empty content string; the reasoning usually already contains the analysis,
+  // so surface it instead of dumping the raw provider JSON into the chat.
+  const reasoning = message
+    ? [readString(message.reasoning_content), readString(message.reasoning)].find(Boolean)
+    : undefined;
+  if (reasoning) {
+    return reasoning;
   }
   return readString(value.output_text);
 }

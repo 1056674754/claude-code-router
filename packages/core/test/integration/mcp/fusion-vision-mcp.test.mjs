@@ -521,6 +521,66 @@ test("Fusion vision MCP forwards a local PNG file with a supported label", async
   assert.equal(provider.lastBody?.messages?.[0]?.content?.[1]?.image_url?.url, `data:image/png;base64,${pngA}`);
 });
 
+test("Fusion vision MCP sends an explicit max_tokens and surfaces reasoning when content is empty", async (t) => {
+  const seen = { providerBody: undefined };
+  const server = http.createServer(async (request, response) => {
+    const body = await readRequestBody(request);
+    seen.providerBody = JSON.parse(body);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      choices: [{ finish_reason: "length", message: { content: "", reasoning_content: "the screenshot shows a login form" } }],
+      usage: { completion_tokens: 1024, prompt_tokens: 10, total_tokens: 1034 }
+    }));
+  });
+  try {
+    await listen(server);
+  } catch (error) {
+    if (isLocalListenUnavailable(error)) {
+      t.skip(`Local HTTP listen is unavailable: ${formatError(error)}`);
+      return;
+    }
+    throw error;
+  }
+  t.after(() => server.close());
+
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const child = spawn(process.execPath, [path.join(process.cwd(), ".test-dist", "core", "runtime", "fusion-vision-mcp.js")], {
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      FUSION_BUILTIN_TOOL_KIND: "vision",
+      FUSION_TOOL_NAME: "vision_understand",
+      VISION_API_KEY: "external-key",
+      VISION_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+      VISION_MODEL: "test-vision"
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill();
+    }
+  });
+
+  const response = await sendJsonRpc(child, {
+    id: 1,
+    jsonrpc: "2.0",
+    method: "tools/call",
+    params: {
+      arguments: { imageBase64: "iVBORw0KGgo=", mimeType: "image/png", prompt: "Describe this image." },
+      name: "vision_understand"
+    }
+  });
+
+  assert.equal(response.error, undefined);
+  assert.equal(response.result?.isError, undefined);
+  assert.equal(seen.providerBody?.max_tokens, 8192);
+  const text = response.result?.content?.[0]?.text ?? "";
+  assert.equal(text, "the screenshot shows a login form");
+  assert.equal(text.includes('"choices"'), false);
+});
+
 async function serveVision(t, respond) {
   let requests = 0;
   let lastBody;
