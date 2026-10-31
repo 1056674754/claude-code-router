@@ -1094,6 +1094,7 @@ export type VirtualModelFusionWebSearchProvider =
   | "google_cse"
   | "serper"
   | "serpapi"
+  | "serply"
   | "tavily"
   | "exa";
 
@@ -1843,6 +1844,8 @@ export type BotGatewayQrWindowCloseResult = {
 };
 
 export type AppConfig = {
+  /** Revision returned by getConfig; required when replacing existing settings. */
+  configRevision?: string;
   APIKEY: string;
   APIKEYS: ApiKeyConfig[];
   API_TIMEOUT_MS: number | string;
@@ -2241,6 +2244,12 @@ export type RequestStreamMetrics = {
   toolObserved: boolean;
   upstreamTimeToFirstSignalMs?: number;
 };
+
+export function requestLogOutcome(entry: { error?: string; ok: boolean; statusCode: number }): "completed" | "error" | "unknown" {
+  if (entry.error) return "error";
+  if (entry.statusCode <= 0) return "unknown";
+  return entry.ok ? "completed" : "error";
+}
 
 export type RequestLogEntry = {
   activeOutputMs?: number;

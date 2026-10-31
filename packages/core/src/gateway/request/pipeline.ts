@@ -424,6 +424,9 @@ export class GatewayRequestPipeline {
         routeFallback = routed.decision.fallback ?? routeFallback;
         routedSessionId = routed.decision.sessionId;
         routedTokenCount = routed.decision.tokenCount;
+        if (routedTokenCount === 0 && pluginService.hasGatewayRequestTransforms({ includeBuiltIns: false })) {
+          routedTokenCount = this.plugin.countTokens(routed.body).input_tokens;
+        }
         if (routed.decision.model) {
           headers[ccrRoutedModelHeader] = sanitizeHeaderValue(routed.decision.model);
           routedModel = routed.decision.model;
@@ -981,7 +984,7 @@ export class GatewayRequestPipeline {
           response.end();
           return;
         }
-        const outboundErrorText = appendAggregateErrorAttemptSummary(bufferedErrorText) ?? bufferedErrorText;
+        const outboundErrorText = appendAggregateErrorAttemptSummary(bufferedErrorText, upstreamResult.failedAttempts) ?? bufferedErrorText;
         if (outboundErrorText !== bufferedErrorText) {
           responseHeaders.delete("content-length");
         }
@@ -1180,6 +1183,8 @@ export class GatewayRequestPipeline {
         }));
         // Terminate the client's stream properly so it can classify the failure
         // and retry, instead of hanging on a socket that will never finish.
+        // (.pipe() does not end the client response when a stage errors, so an
+        // upstream reset would otherwise leave the client waiting forever.)
         sseTailGuard?.writeTerminalError();
         if (!clientDisconnected && !response.destroyed && !response.writableEnded) {
           response.end();
