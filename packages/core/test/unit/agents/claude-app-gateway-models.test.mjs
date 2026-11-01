@@ -103,11 +103,23 @@ test("issue 1535 the discovered default is routable and the bare fallback resolv
   });
   const response = createClaudeModelsResponse(config);
 
-  assert.equal(
-    response.data.some((model) => model.id === "claude-sonnet-4-5"),
-    false,
-    "the unroutable bare fallback must never be published by GET /v1/models"
-  );
+  // Native claude-* shaped models publish under their bare name (thinking/effort
+  // UI), and every such publication must round-trip to its provider selector —
+  // the issue-1535 failure mode was a bare id with no routable target.
+  const barePublication = response.data?.find((model) => model.id === "claude-sonnet-4-5");
+  if (barePublication) {
+    const roundTrip = prepareClaudeAppDiscoveredModelRequest(
+      config,
+      "POST",
+      "/v1/messages",
+      Buffer.from(JSON.stringify({ messages: [], model: "claude-sonnet-4-5" }))
+    );
+    assert.equal(
+      roundTrip?.routedModel,
+      "provider-2/claude-sonnet-4-5",
+      "a published bare claude-* id must resolve to its provider, never to model-chain fallback"
+    );
+  }
   assert.ok(response.first_id, "discovery must publish a routable default model");
 
   const rewritten = prepareClaudeAppDiscoveredModelRequest(
@@ -217,12 +229,15 @@ test("issue 1535 historical fallback IDs are never special-cased", () => {
   });
   const body = Buffer.from(JSON.stringify({ messages: [], model: "claude-sonnet-4-5" }));
 
+  // Configured: the bare claude-* id now publishes as a native route and
+  // rewrites to its provider selector (thinking/effort UI contract). Only the
+  // UNCONFIGURED case below must stay special-case-free.
   assert.equal(prepareClaudeAppDiscoveredModelRequest(
     configuredLegacyModel,
     "POST",
     "/v1/messages",
     body
-  ), undefined);
+  )?.routedModel, "Provider-2/claude-sonnet-4-5");
   assert.equal(prepareClaudeAppDiscoveredModelRequest(
     unconfiguredLegacyModel,
     "POST",

@@ -458,8 +458,15 @@ function claudeAppGatewayGeneratedRouteId(model: string): string {
 function claudeAppGatewayNativeRouteId(model: string): string | undefined {
   const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model);
   const lower = normalized.toLowerCase();
-  if (!normalized.includes("/") && claudeAppGatewayNativeModelNameIsSafe(lower)) {
-    return normalized;
+  // A provider-prefixed selector whose bare model name is native claude-*
+  // shaped (kpzhu/claude-fable-5-1) publishes under that bare name: clients
+  // gate the thinking/effort UI on native claude-* ids, and the route keeps
+  // the full selector as its targetModel for request resolution.
+  const bareModel = normalized.includes("/")
+    ? normalized.slice(normalized.lastIndexOf("/") + 1)
+    : normalized;
+  if (bareModel && claudeAppGatewayNativeModelNameIsSafe(bareModel.toLowerCase())) {
+    return bareModel;
   }
   if (lower.startsWith("anthropic/")) {
     const anthropicModel = normalized.slice("anthropic/".length);
