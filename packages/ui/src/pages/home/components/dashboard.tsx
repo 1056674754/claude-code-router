@@ -1487,7 +1487,21 @@ function TokenActivityOverviewWidget({
   usageStats: UsageStatsSnapshot;
 }) {
   const t = useAppText();
-  const weekCount = overviewActivityWeekCount(dimensions);
+  const gridAreaRef = useRef<HTMLDivElement>(null);
+  const gridAreaSize = useElementSize(gridAreaRef);
+  const fallbackWeekCount = overviewActivityWeekCount(dimensions);
+  // Square cells, sized from the row height; the grid then fills the card's
+  // full width by ADDING weeks (dim empty columns, data anchored at the
+  // right edge like GitHub) instead of stretching cells out of square.
+  const cellGap = dimensions.height <= 1 ? 2 : dimensions.width >= 3 ? 4 : 3;
+  const labelColumnWidth = dimensions.width >= 2 ? 20 : 0;
+  const heightForCells = Math.max(0, gridAreaSize.height - 28 - 6 * cellGap);
+  const cellSize = Math.max(6, Math.min(14, Math.floor(heightForCells / 7)));
+  let weekCount = fallbackWeekCount;
+  if (gridAreaSize.width > 0 && cellSize > 0) {
+    const widthWeeks = Math.floor((gridAreaSize.width - labelColumnWidth - cellGap) / (cellSize + cellGap));
+    weekCount = Math.max(fallbackWeekCount, Math.min(104, widthWeeks));
+  }
   const activity = buildTokenActivity(usageStats.series, {
     maxWeeks: weekCount,
     minWeeks: weekCount
@@ -1499,6 +1513,7 @@ function TokenActivityOverviewWidget({
     <Card className="overview-card flex h-full min-h-0 min-w-0 flex-col">
       <OverviewCardHeading icon={CalendarDays} title={t("Activity")} tone="green" trailing={<Badge variant="outline">{t("Tokens")}</Badge>} />
       <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col" ref={gridAreaRef}>
         {showSummary ? (
           <div className={cn("overview-nested-surface mb-3 grid overflow-hidden border", dimensions.width >= 2 ? "grid-cols-4" : "grid-cols-2")}>
             <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(activity.longestStreak)} unit={t(activity.longestStreak === 1 ? "day" : "days")} />
@@ -1524,6 +1539,7 @@ function TokenActivityOverviewWidget({
             <span>{t("More")}</span>
           </div>
         ) : null}
+        </div>
       </CardContent>
     </Card>
   );
@@ -1582,7 +1598,7 @@ function OverviewActivityGrid({
   // Reserve the month label row's measured height plus its `mb-1` margin: a hard-coded
   // height under-reserves, which pushes the last activity row past the frame and clips it.
   const monthLabelBlockHeight = showMonthLabels ? (monthLabelSize.height || 20) + MONTH_LABEL_BOTTOM_MARGIN : 0;
-  const { cellHeight, cellWidth } = activityGridCellSize({
+  const cellSize = activityGridCellSize({
     availableHeight: gridFrameSize.height,
     availableWidth: gridFrameSize.width,
     cellGap,
@@ -1591,13 +1607,13 @@ function OverviewActivityGrid({
     monthLabelBlockHeight,
     weekCount: activity.weekCount
   });
-  const activityColumns = `repeat(${activity.weekCount}, ${cellWidth}px)`;
+  const activityColumns = `repeat(${activity.weekCount}, ${cellSize}px)`;
   const gridTemplateColumns = `${showDayLabels ? `${labelColumnWidth}px ` : ""}${activityColumns}`;
-  const gridWidth = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + activity.weekCount * cellWidth + Math.max(0, activity.weekCount - 1) * cellGap;
+  const gridWidth = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + activity.weekCount * cellSize + Math.max(0, activity.weekCount - 1) * cellGap;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" ref={gridFrameRef}>
-      {cellWidth > 0 && cellHeight > 0 ? (
+      {cellSize > 0 ? (
         <div className="min-w-0 overflow-visible">
           <div className="w-full max-w-full" style={{ width: `${gridWidth}px` }}>
             {showMonthLabels ? (
@@ -1607,7 +1623,7 @@ function OverviewActivityGrid({
                 style={{ height: monthLabelSize.height || 14 }}
               >
                 {activity.months.map((month, index) => {
-                  const left = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + month.weekIndex * (cellWidth + cellGap);
+                  const left = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + month.weekIndex * (cellSize + cellGap);
                   const isLast = index === activity.months.length - 1;
                   const fitsRight = left + month.label.length * 11 + 4 <= gridWidth;
                   return (
@@ -1633,7 +1649,7 @@ function OverviewActivityGrid({
               style={{
                 gap: `${cellGap}px`,
                 gridTemplateColumns,
-                gridTemplateRows: `repeat(7, ${cellHeight}px)`
+                gridTemplateRows: `repeat(7, ${cellSize}px)`
               }}
             >
               {showDayLabels ? dayLabels.map((label, index) => (
@@ -1663,8 +1679,8 @@ function OverviewActivityGrid({
                     backgroundColor: overviewActivityColor(cell.intensity, cell.inObservedRange),
                     gridColumn: cell.weekIndex + (showDayLabels ? 2 : 1),
                     gridRow: cell.dayIndex + 1,
-                    height: `${cellHeight}px`,
-                    width: `${cellWidth}px`
+                    height: `${cellSize}px`,
+                    width: `${cellSize}px`
                   }}
                 />
               ))}
@@ -1697,21 +1713,19 @@ function activityGridCellSize({
   labelColumnWidth,
   monthLabelBlockHeight,
   weekCount
-}: ActivityGridCellSizeInput): { cellHeight: number; cellWidth: number } {
+}: ActivityGridCellSizeInput): number {
   if (weekCount <= 0) {
-    return { cellHeight: 0, cellWidth: 0 };
+    return 0;
   }
   if (availableHeight <= 0 || availableWidth <= 0) {
-    return { cellHeight: fallbackCellSize, cellWidth: fallbackCellSize };
+    return fallbackCellSize;
   }
 
-  // Fill the card in both axes: cells stretch independently so the grid
-  // spans the full width instead of leaving a dead zone on the right.
+  // Cells stay square; the grid fills the card's width through its week
+  // count (the widget adds dim trailing weeks), never by stretching.
   const widthForCells = availableWidth - labelColumnWidth - (labelColumnWidth ? cellGap : 0) - Math.max(0, weekCount - 1) * cellGap;
   const heightForCells = availableHeight - monthLabelBlockHeight - 6 * cellGap;
-  const cellWidth = Math.max(1, Math.floor(widthForCells / weekCount));
-  const cellHeight = Math.max(1, Math.floor(heightForCells / 7));
-  return { cellHeight, cellWidth };
+  return Math.max(1, Math.floor(Math.min(widthForCells / weekCount, heightForCells / 7)));
 }
 
 function formatActivityTokenCount(value: number): string {
@@ -3574,7 +3588,7 @@ function providerAccountMeterDetailStatusLabel(status: string | undefined, t: (v
 type CodexResetCardStatus = "idle" | "resetting" | "complete";
 type CodexResetCreditDetail = NonNullable<ProviderAccountMeter["details"]>[number];
 
-function CodexResetCreditDialog({
+export function CodexResetCreditDialog({
   account,
   details,
   detail,
