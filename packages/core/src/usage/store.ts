@@ -168,9 +168,15 @@ export class UsageStore {
     const explicitCost = normalizeOptionalCost(event.costUsd);
     // Price by the model that actually served the request; the client-facing
     // model can be an unrelated route alias with a wildly different price.
-    const pricingModel = logicalModel && logicalModel !== "unknown" && logicalModel !== model
-      ? logicalModel
-      : model;
+    // Capture flows pass modelIsRouteSelector: false with the display model
+    // already resolved and pricing metadata precomputed from the upstream
+    // model, so the raw logical ref (a namespaced registry id) must not leak
+    // into the estimator there.
+    const pricingModel = event.modelIsRouteSelector === false
+      ? model
+      : logicalModel && logicalModel !== "unknown" && logicalModel !== model
+        ? logicalModel
+        : model;
     const estimatedCost = explicitCost === undefined
       ? await this.estimateCost({
           cacheReadTokens,
@@ -380,6 +386,7 @@ export class UsageStore {
             COALESCE(credential_id, ''),
             COUNT(*),
             COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status_code > 0 AND (status_code < 200 OR status_code >= 400) THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(input_tokens), 0),
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
@@ -671,6 +678,7 @@ export class UsageStore {
         credential_id TEXT NOT NULL DEFAULT '',
         request_count INTEGER NOT NULL DEFAULT 0,
         success_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL DEFAULT 0,
         cache_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -820,6 +828,18 @@ function ensureUsageSchema(database: SqlDatabase): void {
   }
   if (!columns.has("credential_id")) {
     database.exec("ALTER TABLE usage_events ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''");
+  }
+  const rollupColumns = new Set(
+    queryRows(database, "PRAGMA table_info(usage_rollups)")
+      .map((row) => String(row.name ?? ""))
+      .filter(Boolean)
+  );
+  if (rollupColumns.size > 0 && !rollupColumns.has("error_count")) {
+    // Rollups aggregated before error_count existed cannot be amended in
+    // place; drop them so the next read recomputes every day from events.
+    database.exec("ALTER TABLE usage_rollups ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0");
+    database.exec("DELETE FROM usage_rollups");
+    database.exec("DELETE FROM usage_rollup_meta WHERE key = 'watermark'");
   }
   database.exec("CREATE INDEX IF NOT EXISTS usage_events_client_idx ON usage_events(client)");
   database.exec("CREATE INDEX IF NOT EXISTS usage_events_created_at_idx ON usage_events(created_at)");
@@ -1073,7 +1093,8 @@ const usageRollupTotalsSelect = `
       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
       COALESCE(SUM(cost_usd), 0) AS cost_usd,
       COALESCE(SUM(duration_ms), 0) AS duration_ms,
-      COALESCE(SUM(success_count), 0) AS success_count
+      COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count
 `;
 
 const usageRollupSumRowFields = [
@@ -1085,7 +1106,8 @@ const usageRollupSumRowFields = [
   "computed_total_tokens",
   "prompt_tokens",
   "duration_ms",
-  "success_count"
+  "success_count",
+  "error_count"
 ] as const;
 
 function rollupBucketKey(dayKey: string, hourBucket: number, range: UsageStatsRange): string {
