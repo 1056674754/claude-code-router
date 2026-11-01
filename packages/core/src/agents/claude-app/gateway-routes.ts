@@ -133,12 +133,24 @@ export function buildClaudeAppDesktopInferenceModels(
     return composeDerivedClaudeAppDesktopMenu(config, options);
   }
   const routes = buildClaudeAppGatewayModelRoutes(config, options);
-  const models: ClaudeAppGatewayInferenceModel[] = [];
-  const seen = new Set<string>();
+  // Declared entries are the EXTRA slots beyond the four official tiers: the
+  // tier slots (derived from the profile's tier fields) always lead the menu,
+  // and a declared entry whose target a tier already covers is skipped so one
+  // real model never shows twice.
+  const tierRoutes = buildClaudeAppTierSlotRoutes(config, options);
+  const tierSlotIds = new Set(tierRoutes.map((route) => route.id.toLowerCase()));
+  const tierTargets = new Set(tierRoutes.map((route) =>
+    stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase()
+  ));
+  const models: ClaudeAppGatewayInferenceModel[] = tierRoutes.map(claudeAppGatewayRouteToInferenceModel);
+  const seen = new Set(tierSlotIds);
   for (const slot of declared) {
     const entry: ClaudeAppDesktopModelSlot = typeof slot === "string" ? { name: slot } : slot;
     const label = entry.label?.trim();
     const route = matchClaudeAppDesktopRoute(routes, entry.name);
+    if (route && tierTargets.has(stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase())) {
+      continue;
+    }
     const model: ClaudeAppGatewayInferenceModel = route
       ? {
           labelOverride: label || route.displayName,

@@ -23,7 +23,7 @@ import {
   OverviewWidgetConfig, parseProviderAccountDraft, parseProviderExtraJsonDraft, pluginConfigPatchFromSettingsDraft,
   providerCredentialsFromDraft,
   persistLanguagePreference, PluginInstallCandidate, PluginMarketplaceEntry, PluginRoutingConfigTarget, PluginSettingsDraft, presetCapabilitiesFromDraft,
-  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
+  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftDesktopSlots, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
   profileOpenCommandFallback, profileOpenSurfaces, ProviderAccountSnapshot, providerApiKeySafetyIssue, ProviderConnectivityCheckReport, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerIdentitySafetyIssue, providerProbeCandidates,
   providerAutoFetchKnownModelsForSave, providerBaseUrl, providerCapabilitiesForProtocols, providerCapabilitiesForSave, providerConnectivityApiKeyFromDraft, providerConnectivityProviderPlugins, providerGlobalBaseUrlForProbe, providerManualFieldsForSave, providerProbeCandidatesApiKeySafetyIssue, providerProbeHasSupportedProtocol, providerProbeInputKey, providerProtocolOptions, providerSelectableProtocolsFromProbe, ProxyNetworkSnapshot,
   ProxyStatus, readLanguagePreference, RequestLogListFilter, RequestLogPage, ResolvedLanguage,
@@ -40,6 +40,7 @@ import {
   AppDialogStack, FeedbackStack, LightToast, MainLayout, OnboardingLayout, PersistenceFeedback, shouldCheckForUpdateOnOpen
 } from "./components/index";
 import { hasAvailableGatewayModels } from "@ccr/core/contracts/app";
+import type { ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
 
 type ProfileOpenDialogState = {
   busy?: "" | "cli" | "app";
@@ -1118,14 +1119,33 @@ function App() {
 
   function enqueueConfigSave(config: AppConfig, options?: AppSaveConfigOptions): Promise<AppConfig> {
     const baseDraft = currentDraft.current;
-    return configSaveQueue.current.run(
-      () => window.ccr!.saveConfig(config, options),
-      (saved) => {
-        const normalized = normalizeConfig(saved);
-        const draft = normalizeConfig(reconcileSavedConfig(baseDraft, currentDraft.current, normalized));
-        setConfigSnapshots(normalized, draft);
+    // Another writer (background model refresh, another surface) may update
+    // the persisted config between draft load and save; a bare conflict error
+    // would otherwise wedge every subsequent save until the page is reloaded.
+    // On conflict: pull the fresh saved config, re-apply this draft's edits on
+    // top of it, and retry once with the current revision.
+    const write = async (): Promise<AppConfig> => {
+      try {
+        return await window.ccr!.saveConfig(config, options);
+      } catch (error) {
+        if (!isConfigConflictError(error)) {
+          throw error;
+        }
+        const fresh = normalizeConfig(await window.ccr!.getConfig());
+        const rebased = normalizeConfig(reconcileSavedConfig(currentSaved.current ?? fresh, currentDraft.current, fresh));
+        currentDraft.current = rebased;
+        return window.ccr!.saveConfig(rebased, options);
       }
-    );
+    };
+    return configSaveQueue.current.run(write, (saved) => {
+      const normalized = normalizeConfig(saved);
+      const draft = normalizeConfig(reconcileSavedConfig(baseDraft, currentDraft.current, normalized));
+      setConfigSnapshots(normalized, draft);
+    });
+  }
+
+  function isConfigConflictError(error: unknown): boolean {
+    return error instanceof Error && (error.name === "AppConfigConflictError" || error.message.includes("AppConfigConflictError"));
   }
 
   async function persistApiKeys(apiKeys: ApiKeyConfig[], setError: (message: string) => void): Promise<boolean> {
@@ -2780,7 +2800,10 @@ function App() {
   function openAddProfileDialog(agent: ProfileConfig["agent"] = profileAgentTab) {
     const resolvedAgent = isProfileAgentAvailable(agent) ? agent : defaultAvailableProfileAgent;
     setProfileAgentTab(resolvedAgent);
-    setProfileDraft(profileDraftWithDetectedAppPath(createProfileDraft(resolvedAgent), appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
+    setProfileDraft(profileDraftWithDetectedAppPath({
+      ...createProfileDraft(resolvedAgent),
+      desktopSlots: (draftConfig.claudeAppDesktop?.models ?? []).map((slot) => typeof slot === "string" ? { name: slot } : slot)
+    }, appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
     setProfileActionError("");
     setProfileAddOpen(true);
   }
@@ -2791,12 +2814,10 @@ function App() {
       return;
     }
     setProfileEditIndex(index);
-    setProfileEditDraft(profileDraftWithDetectedAppPath(
-      createProfileDraftFromProfile(profile, draftConfig.botConfigs),
-      appInfo.chatgptAppPath,
-      appInfo.opencodeAppPath,
-      appInfo.workbuddyAppPath
-    ));
+    setProfileEditDraft(profileDraftWithDetectedAppPath({
+      ...createProfileDraftFromProfile(profile, draftConfig.botConfigs),
+      desktopSlots: (draftConfig.claudeAppDesktop?.models ?? []).map((slot) => typeof slot === "string" ? { name: slot } : slot)
+    }, appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
     setProfileActionError("");
   }
 
@@ -3058,7 +3079,7 @@ function App() {
     const existingProfile = onboardingProfileIndex >= 0 ? draftConfig.profile.profiles[onboardingProfileIndex] : undefined;
     const profile = profileConfigFromDraft(profileDraft, draftConfig.profile.profiles, existingProfile, draftConfig.botConfigs);
     setProfileAgentTab(profile.agent);
-    const next = buildConfigUpdate((config) => ({
+    const next = buildConfigUpdate((config) => withClaudeAppDesktopExtras({
       ...config,
       profile: {
         ...config.profile,
@@ -3072,7 +3093,7 @@ function App() {
           return enforceSingleEnabledGlobalProfilePerAgent(profiles, profileIndex);
         })()
       }
-    }));
+    }, profileDraft.agent === "claude-code" ? profileDraftDesktopSlots(profileDraft) : undefined));
     try {
       if (!(await persistConfig(next, setProfileActionError, { applyProfile: true }, "form"))) {
         return false;
@@ -3116,7 +3137,7 @@ function App() {
     }
     const nextProfile = profileConfigFromDraft(profileEditDraft, draftConfig.profile.profiles, currentProfile, draftConfig.botConfigs);
     setProfileAgentTab(nextProfile.agent);
-    const next = buildConfigUpdate((config) => {
+    const next = buildConfigUpdate((config) => withClaudeAppDesktopExtras((() => {
       const profiles = [...config.profile.profiles];
       profiles[profileEditIndex] = nextProfile;
       return {
@@ -3126,7 +3147,7 @@ function App() {
           profiles: enforceSingleEnabledGlobalProfilePerAgent(profiles, profileEditIndex)
         }
       };
-    });
+    })(), profileEditDraft.agent === "claude-code" ? profileDraftDesktopSlots(profileEditDraft) : undefined));
     try {
       if (!(await persistConfig(next, setProfileActionError, undefined, "form"))) {
         return false;
@@ -3138,6 +3159,22 @@ function App() {
     } finally {
       setProfileSubmitBusy("");
     }
+  }
+
+  // Claude Desktop extra slots are global config (claudeAppDesktop.models) but
+  // edited from the claude-code profile dialog: tier slots always derive from
+  // the profile's tier fields; these entries follow them in the menu. An empty
+  // list removes the declaration so every remaining routed model follows.
+  function withClaudeAppDesktopExtras(config: AppConfig, extras: ClaudeAppDesktopModelSlot[] | undefined): AppConfig {
+    if (extras === undefined) {
+      return config;
+    }
+    if (extras.length === 0) {
+      const rest = { ...config };
+      delete rest.claudeAppDesktop;
+      return rest;
+    }
+    return { ...config, claudeAppDesktop: { models: extras } };
   }
 
   function updateProfileItem(index: number, patch: Partial<ProfileConfig>) {
@@ -3324,7 +3361,7 @@ function App() {
                 profile: {
                   addProfile: openAddProfileDialog,
                   agentOptions: availableProfileAgentOptions,
-                  applyError: profileActionError,
+                  applyError: profileAddOpen || profileEditIndex !== undefined ? "" : profileActionError,
                   copyProfileCliCommand: (index) => void copyProfileCliCommand(index),
                   config: draftConfig,
                   editProfile: openEditProfileDialog,

@@ -17,6 +17,7 @@ import type {
   AppConfig,
   BotGatewayRuntimeConfig,
   BotGatewaySavedConfig,
+  ClaudeAppDesktopModelSlot,
   GatewayProviderConfig,
   ProfileConfig,
   ProfileOpenSurface,
@@ -551,6 +552,7 @@ export function createProfileDraft(agent: ProfileConfig["agent"] = "claude-code"
     ...createBotGatewayDraft(),
     claudeSettingsText: "{}",
     configFile: defaultCodexConfigFile(agent),
+    desktopSlots: [],
     envRows: agent === "claude-code" ? keyValueRowsFromRecord(claudeCodeProfileEnv()) : [],
     fableModel: "",
     haikuModel: "",
@@ -707,6 +709,27 @@ function matchingBotConfigId(botGateway: BotGatewayRuntimeConfig | undefined, bo
     (config.botGateway.platform === botGateway.platform && config.botGateway.tenantId === botGateway.tenantId)
   );
   return matched?.id ?? "";
+}
+
+/**
+ * Cleaned Claude Desktop extra slots from a profile draft: trims fields,
+ * drops rows without a model selector, and emits the exact
+ * claudeAppDesktop.models shape (menu entries after the four official tiers).
+ */
+export function profileDraftDesktopSlots(
+  draft: Pick<AddProfileDraft, "desktopSlots">
+): ClaudeAppDesktopModelSlot[] {
+  return (draft.desktopSlots ?? [])
+    .map((slot) => {
+      const name = slot.name.trim();
+      const label = slot.label?.trim();
+      return {
+        name,
+        ...(label ? { label } : {}),
+        ...(slot.supports1m === true ? { supports1m: true as const } : {})
+      };
+    })
+    .filter((slot) => slot.name.length > 0);
 }
 
 export function profileConfigFromDraft(

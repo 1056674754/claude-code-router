@@ -30,6 +30,7 @@ export type ProviderModelAutoRefreshProviderResult = {
   fetchedModels: string[];
   provider: string;
   providerIndex: number;
+  removedModels?: string[];
   skipped?: boolean;
 };
 
@@ -145,15 +146,31 @@ export async function refreshAutoFetchProviderModels(
       const knownModels = mergeModelLists(provider.autoFetchKnownModels ?? [], provider.models);
       const hasKnownModelBaseline = Boolean(provider.autoFetchKnownModels?.length);
       const addedModels = hasKnownModelBaseline ? modelsNotIn(knownModels, fetchedModels) : [];
-      const mergedModels = mergeModelLists(provider.models, addedModels);
-      const nextKnownModels = mergeModelLists(knownModels, fetchedModels);
+      // Align with the upstream catalog: models this upstream previously
+      // offered (present in the auto-fetch baseline) but no longer lists are
+      // stale and drop off the provider. Manually added models — anything not
+      // in the baseline — stay untouched, so a relay that omits a still-working
+      // model from /models cannot lose it.
+      const removedModels = hasKnownModelBaseline
+        ? provider.models.filter((model) =>
+            !fetchedModels.includes(model) && provider.autoFetchKnownModels?.includes(model)
+          )
+        : [];
+      const mergedModels = mergeModelLists(modelsNotIn(removedModels, provider.models), addedModels);
+      // Pruned models also leave the baseline, so if the upstream lists them
+      // again later they register as additions instead of silently staying
+      // gone. The baseline tracks upstream listings only — manually added
+      // models are merged into `knownModels` for addition detection but never
+      // become prunable through it.
+      const nextKnownModels = mergeModelLists(modelsNotIn(removedModels, provider.autoFetchKnownModels ?? []), fetchedModels);
       providerResults.push({
         addedModels,
         fetchedModels,
         provider: providerName,
-        providerIndex
+        providerIndex,
+        ...(removedModels.length > 0 ? { removedModels } : {})
       });
-      if (addedModels.length === 0 && sameModelList(provider.autoFetchKnownModels, nextKnownModels)) {
+      if (addedModels.length === 0 && removedModels.length === 0 && sameModelList(provider.autoFetchKnownModels, nextKnownModels)) {
         continue;
       }
 

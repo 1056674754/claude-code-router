@@ -1,4 +1,5 @@
 import { useDraftClose } from "./unsaved-changes";
+import type { ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
 import {
   AddProfileDraft, AddRoutingRuleDraft, AgentLogo, AnimatedIconSwap, AnimatedPopover, AnimatePresence, AppConfig, Badge, BotGatewaySavedConfig, botGatewaySavedConfigLabel, BotHandoffScanTarget, Button,
   Card, CardContent, CardHeader, CardTitle, Check, ChevronDown, CircleAlert, Copy,
@@ -9,12 +10,13 @@ import {
   normalizeProfileScope, normalizeProfileSurface, Pencil, Plus, PopoverContent,
   profileAgentLabel, profileAgentOptions, ProfileConfig, type ProfileAgentOption, profileModelProviderOptions, profileOpenSurfaces, profileScopeLabel, profileScopeOptions, profileSummaryItems, profileSurfaceLabel, profileSurfaceOptions,
   Play, Power, RefreshCw, Search, Select, SelectControl, Settings, Terminal, Toggle, translateOptions, Trash2, useAppErrorText, useAppText, useLayoutEffect, type KeyValueDraftRow, type ProfileOpenSurface, type ProfileRuntimeStatus, type ReactDragEvent, type ReactNode, type VirtualModelProfileConfig,
-  copyTextToClipboard, formatClaudeSettingsDraft, formatRouterRuleCondition, formatRouterRuleTarget, isClaudeSettingsDraftValid, isPlainRecord, isRoutingRuleDraftSubmittable, normalizeProviderModelSelector, routerRuleTypeLabel, routingRuleFromDraft, type RouterRule, uniqueStrings, useResolvedAppLanguage, validateProfileEnvRows,
+  copyTextToClipboard, formatClaudeSettingsDraft, formatRouterRuleCondition, formatRouterRuleTarget, isClaudeSettingsDraftValid, isPlainRecord, isRoutingRuleDraftSubmittable, normalizeProviderModelSelector, routerRuleTypeLabel, routingRuleFromDraft, type RouterRule, uniqueStrings, useResolvedAppLanguage, validateProfileEnvRows, virtualModelProfileModelNames,
   useCallback, useEffect, useMemo, useRef, useState, X
 } from "../shared/index";
 import claudeCodeConfigOptionsJson from "@/generated/claude-code-config-options.json";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ModelMultiSelector, ModelSelector } from "./model-selector";
 import { AddRoutingRuleDialog } from "./routing";
 
@@ -733,9 +735,51 @@ export function AddProfileForm({
   const [appPathDragActive, setAppPathDragActive] = useState(false);
   const appPathLabel = profileAppPathLabel(draft.agent);
   const showAppPathField = draft.surface !== "cli" && Boolean(appPathLabel);
+  const desktopSlots = draft.desktopSlots ?? [];
+  const updateExtraSlot = (index: number, patch: Partial<ClaudeAppDesktopModelSlot>) => {
+    onChange({ desktopSlots: desktopSlots.map((slot, i) => (i === index ? { ...slot, ...patch } : slot)) });
+  };
+  const moveExtraSlot = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= desktopSlots.length) {
+      return;
+    }
+    const next = [...desktopSlots];
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange({ desktopSlots: next });
+  };
+  const removeExtraSlot = (index: number) => {
+    onChange({ desktopSlots: desktopSlots.filter((_, i) => i !== index) });
+  };
+  const addExtraSlot = () => {
+    onChange({ desktopSlots: [...desktopSlots, { name: "" }] });
+  };
   const modelProviderOptions = useMemo(
     () => profileModelProviderOptions(providers, virtualModelProfiles),
     [providers, virtualModelProfiles]
+  );
+  // The tier fields and Desktop extra slots only offer models the profile's
+  // allowlist lets through; an empty allowlist means no restriction.
+  const tierSelectableProviders = useMemo(
+    () => draft.availableModels.length > 0
+      ? providers.map((provider) => ({
+        ...provider,
+        models: provider.models.filter((model) =>
+          draft.availableModels.includes(normalizeProviderModelSelector(`${provider.name}/${model}`))
+        )
+      })).filter((provider) => provider.models.length > 0)
+      : providers,
+    [providers, draft.availableModels]
+  );
+  const tierSelectableVirtualModelProfiles = useMemo(
+    () => draft.availableModels.length > 0
+      ? virtualModelProfiles.filter((profile) =>
+          virtualModelProfileModelNames([profile]).some((model) =>
+            draft.availableModels.includes(normalizeProviderModelSelector(`Fusion/${model}`))
+          )
+        )
+      : virtualModelProfiles,
+    [virtualModelProfiles, draft.availableModels]
   );
   const availableModelCount = modelProviderOptions.reduce((count, provider) => count + provider.models.length, 0);
   const allAllowedModelValues = useMemo(
@@ -880,9 +924,9 @@ export function AddProfileForm({
             <Field label={t("Default model")} requirement="required" requirementLabel={requiredFieldLabel}>
               <ModelSelector
                 placeholder={modelPlaceholder || t("Select default model")}
-                providers={providers}
+                providers={tierSelectableProviders}
                 value={draft.model}
-                virtualModelProfiles={virtualModelProfiles}
+                virtualModelProfiles={tierSelectableVirtualModelProfiles}
                 onChange={(model) => onChange({ model })}
               />
               {validation.defaultModel ? <ProfileFieldHint>{t(validation.defaultModel)}</ProfileFieldHint> : null}
@@ -890,39 +934,110 @@ export function AddProfileForm({
             <Field label={t("Fable model")} requirement="optional" requirementLabel={optionalFieldLabel}>
               <ModelSelector
                 placeholder={t("Keep Claude Code default")}
-                providers={providers}
+                providers={tierSelectableProviders}
                 value={draft.fableModel}
-                virtualModelProfiles={virtualModelProfiles}
+                virtualModelProfiles={tierSelectableVirtualModelProfiles}
                 onChange={(fableModel) => onChange({ fableModel })}
               />
             </Field>
             <Field label={t("Opus model")} requirement="optional" requirementLabel={optionalFieldLabel}>
               <ModelSelector
                 placeholder={t("Keep Claude Code default")}
-                providers={providers}
+                providers={tierSelectableProviders}
                 value={draft.opusModel}
-                virtualModelProfiles={virtualModelProfiles}
+                virtualModelProfiles={tierSelectableVirtualModelProfiles}
                 onChange={(opusModel) => onChange({ opusModel })}
               />
             </Field>
             <Field label={t("Sonnet model")} requirement="optional" requirementLabel={optionalFieldLabel}>
               <ModelSelector
                 placeholder={t("Keep Claude Code default")}
-                providers={providers}
+                providers={tierSelectableProviders}
                 value={draft.sonnetModel}
-                virtualModelProfiles={virtualModelProfiles}
+                virtualModelProfiles={tierSelectableVirtualModelProfiles}
                 onChange={(sonnetModel) => onChange({ sonnetModel })}
               />
             </Field>
             <Field label={t("Haiku model")} requirement="optional" requirementLabel={optionalFieldLabel}>
               <ModelSelector
                 placeholder={t("Keep Claude Code default")}
-                providers={providers}
+                providers={tierSelectableProviders}
                 value={draft.haikuModel}
-                virtualModelProfiles={virtualModelProfiles}
+                virtualModelProfiles={tierSelectableVirtualModelProfiles}
                 onChange={(haikuModel) => onChange({ haikuModel, smallFastModel: haikuModel })}
               />
             </Field>
+            <div className="sm:col-span-2 rounded-md border border-border bg-muted/20 p-3">
+              <p className="text-[12px] font-semibold text-foreground">{t("Claude Desktop extra slots")}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {t("Menu entries after the four official tiers. When empty, the remaining routed models follow automatically.")}
+              </p>
+              {(draft.desktopSlots ?? []).length > 0 ? (
+                <div className="mt-2 space-y-1.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] items-center gap-2 text-[11px] text-muted-foreground">
+                    <span>{t("Display label")}</span>
+                    <span>{t("Model")}</span>
+                    <span className="text-center">{t("1M context")}</span>
+                    <span />
+                  </div>
+                  {draft.desktopSlots.map((slot, index) => (
+                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] items-center gap-2" key={index}>
+                      <Input
+                        onChange={(event) => updateExtraSlot(index, { label: event.target.value })}
+                        placeholder={t("Optional")}
+                        value={slot.label ?? ""}
+                      />
+                      <ModelSelector
+                        onChange={(name) => updateExtraSlot(index, { name })}
+                        placeholder={t("Select model")}
+                        providers={tierSelectableProviders}
+                        value={slot.name}
+                        virtualModelProfiles={tierSelectableVirtualModelProfiles}
+                      />
+                      <Checkbox
+                        checked={slot.supports1m === true}
+                        onCheckedChange={(checked) => updateExtraSlot(index, { supports1m: checked || undefined })}
+                      />
+                      <div className="flex items-center gap-1">
+                        <Button
+                          aria-label={t("Move up")}
+                          disabled={index === 0}
+                          onClick={() => moveExtraSlot(index, -1)}
+                          size="iconSm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <span aria-hidden>↑</span>
+                        </Button>
+                        <Button
+                          aria-label={t("Move down")}
+                          disabled={index === draft.desktopSlots.length - 1}
+                          onClick={() => moveExtraSlot(index, 1)}
+                          size="iconSm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <span aria-hidden>↓</span>
+                        </Button>
+                        <Button
+                          aria-label={t("Remove")}
+                          onClick={() => removeExtraSlot(index)}
+                          size="iconSm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <Button className="mt-2" onClick={addExtraSlot} size="sm" type="button" variant="outline">
+                <Plus className="h-3.5 w-3.5" />
+                {t("Add extra slot")}
+              </Button>
+            </div>
           </>
         ) : draft.agent === "grok" ? (
           <Field className="sm:col-span-2" label={t("Grok model")} requirement="optional" requirementLabel={optionalFieldLabel}>

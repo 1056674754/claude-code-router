@@ -961,3 +961,47 @@ test("claude app tier slots keep the non-declared menu composition intact", () =
     buildClaudeAppGatewayInferenceModels(base).map((item) => item.name)
   );
 });
+
+test("claudeAppDesktop declared extras compose tier slots plus exactly those entries", () => {
+  const config = {
+    Providers: [
+      { models: ["glm-5.3", "glm-5.3-flash"], name: "Zhipu" },
+      { models: ["deepseek-v4.1"], name: "Ctyun" }
+    ],
+    claudeAppDesktop: {
+      models: [
+        { label: "k3", name: "Zhipu/glm-5.3-flash" },
+        "Ctyun/deepseek-v4.1"
+      ]
+    },
+    profile: {
+      enabled: true,
+      profiles: [{
+        agent: "claude-code",
+        enabled: true,
+        scope: "global",
+        id: "claude-code-global",
+        model: "Zhipu/glm-5.3-flash",
+        name: "Claude Code",
+        fableModel: "Zhipu/glm-5.3",
+        haikuModel: "",
+        opusModel: "",
+        sonnetModel: "Ctyun/deepseek-v4.1"
+      }]
+    },
+    virtualModelProfiles: []
+  };
+
+  const menu = buildClaudeAppDesktopInferenceModels(config);
+  const names = menu.map((item) => item.name);
+  // Tier slots lead (fable and sonnet — both have distinct tier fields), and
+  // the declared extra "Ctyun/deepseek-v4.1" is dropped because the sonnet
+  // tier slot already covers that target. Exactly the remaining extras follow.
+  const flashRoute = buildClaudeAppGatewayModelRoutes(config)
+    .find((route) => route.targetModel === "Zhipu/glm-5.3-flash");
+  assert.ok(flashRoute);
+  assert.deepEqual(names, ["claude-fable-5", "claude-sonnet-5", flashRoute.id]);
+  // Extra display label lands on the menu entry.
+  const k3 = menu.find((item) => item.name === flashRoute.id);
+  assert.equal(k3.labelOverride, "k3");
+});

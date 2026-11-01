@@ -473,3 +473,37 @@ test("auto model refresh enabled check ignores disabled providers", () => {
     Providers: [{ autoFetchModels: true, enabled: false, models: [], name: "Disabled" }]
   }), false);
 });
+
+test("auto model refresh prunes baseline models the upstream no longer lists", async () => {
+  const config = testConfig({
+    Providers: [
+      {
+        api_base_url: "https://api.provider.test/v1",
+        api_key: "sk-provider",
+        autoFetchModels: true,
+        autoFetchKnownModels: ["alpha", "beta"],
+        id: "provider",
+        models: ["alpha", "beta", "manual-model"],
+        name: "Provider",
+        type: "openai_chat_completions"
+      }
+    ]
+  });
+
+  const result = await refreshAutoFetchProviderModels(config, {
+    probeProvider: async (request) => ({
+      capabilities: [],
+      models: ["alpha", "gamma"],
+      normalizedBaseUrl: request.baseUrl,
+      protocols: []
+    })
+  });
+
+  assert.equal(result.changed, true);
+  // "beta" was tracked from this upstream and is no longer listed → pruned.
+  // "manual-model" was never in an upstream listing → stays. The new upstream
+  // model "gamma" is added, and the pruned model leaves the baseline.
+  assert.deepEqual(result.config.Providers[0].models, ["alpha", "manual-model", "gamma"]);
+  assert.deepEqual(result.config.Providers[0].autoFetchKnownModels, ["alpha", "gamma"]);
+  assert.deepEqual(result.providers[0].removedModels, ["beta"]);
+});

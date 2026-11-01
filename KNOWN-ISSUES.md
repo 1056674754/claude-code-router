@@ -40,8 +40,33 @@ Workaround: ctaigw 其实有 anthropic 兼容端点（https://ai.ctaigw.cn +
 x-api-key）, 已加 provider `CtyunA`（type anthropic_messages）让 deepseek/qwen
 槽位直通; 故 #4 目前不疼了, 但转换缺口仍在, 换其他 openai-only 供应商还会踩。
 
-## 已做的 workaround 脚本（理解现状用）
-- ~/.claude-code-router/fix-desktop-model-names.py — **已可退休**（#1/#2 修复后不再需要;
+## 多 Codex(ChatGPT) OAuth 凭据池 + cc-switch 导入(2026-11-01)
+单 "Codex ChatGPT" provider + `credentials[]` 池,每条 credential 携带
+`codexOauth{accountId, refreshToken, accessToken?}`,复用既有凭据池机制
+(priority/weight/60s 冷却/内部名 `provider::openai_responses::cred:<slug>`)。
+编译期每条凭据派生一个 `codexOauth` 插件(config-compiler `withCodexCredentialOauthPlugins`),
+token 解析:CCR 自有账号存储 `~/.claude-code-router/codex-oauth-accounts/<accountId>.json`
+(0600, 编译期过期即刷新并写回, mirrors Kimi store)。
+- **导入**: 无 UI(用户明确要求去掉按钮)——由 Agent 脚本驱动:调
+  `buildCcSwitchCodexProviderConfig`(agents/local-providers/service.ts)+ `saveAppConfig`,
+  读 `~/.cc-switch/codex_oauth_auth.json` 托管账号(注意: v2 的 `accounts` 是
+  **以账号 id 为 key 的对象**, 读取器同时兼容数组),种子进 store,幂等 upsert
+  (静态 API-key credential 保留)。手动编辑 provider 后保存不会丢 OAuth 凭据
+  (UI draft round-trip 已透传 codexOauth)。旧 app 二进制会把无 api_key 的
+  OAuth 凭据 parse 掉——**先更新 app 再重启**, 旧版运行中别在 app 里保存配置。
+- **live auth.json 语义变更**: 账号绑定插件(accountId 存在)只认 store +
+  同账号的 `~/.codex/auth.json`;不同账号的 live 登录不再踩平所有插件
+  (旧行为是全量覆盖,见 provider-plugin-runtime-identity.test)。
+- **账号过户风险**: 同一账号被 cc-switch 代理和 CCR 同时刷新时,refresh_token
+  轮换可能互相失效。缓解: 导入即建议以 CCR 为该账号唯一刷新方;CCR 刷新遇
+  401/403 会尝试收养 cc-switch 文件里更新的 refresh_token
+  (codex-account-store `adoptPeerRotatedCodexAccount`);store 刷新持续失败时
+  重新点一次导入即可。
+- 引擎(`@the-next-ai/ai-gateway`)请求期也会内存刷新(无回调可观测),store
+  token 可能短暂落后——以编译期刷新+写回为主通道。
+- 不碰 `~/.codex/config.toml`、不碰 KNOWN-ISSUES #3 的接管逻辑;cc-switch 零改动。
+
+## 已做的 workaround 脚本（理解现状用）- ~/.claude-code-router/fix-desktop-model-names.py — **已可退休**（#1/#2 修复后不再需要;
   若仍要用, 注意它写的 4 个槽位现在可直接在 Profiles 页 UI 配置）。
 - ~/.claude-code-router/route-scripts/claude-alias-map.js — 伪装槽位路由:
   fable→Zhipu/glm-5.3; sonnet→Zhipu/glm-5.3-flash（额度耗尽才切 CtyunA/glm-5.3-flash）;
@@ -57,12 +82,22 @@ claude-sonnet-5/claude-haiku-4-5 槽位（fable→opus→sonnet→haiku 序; 字
 已含 [1m] 变体逻辑与 prefer1m）。请求侧: tier 槽位 id 在**策略链中 Router.rules 之后**
 解析到对应 tier 字段——显式规则/script 永远优先, 推导只是兜底。
 规则:
-- **删除 claudeAppDesktop.models 声明即切换到推导模式**; 声明存在时完全接管菜单（高级覆盖,
-  仅 JSON 编辑, 页面无入口）。
+- **claudeAppDesktop.models 现在是"额外槽位"列表**（2026-11-01 二次改版）: 在
+  claude-code profile 编辑模态框里配置（Haiku 字段下方 section, 行 = 显示名 +
+  模型选择器 + 1M + 排序）。菜单 = 官方四档位（tier 字段推导）+ 恰好这些额外
+  槽位（与档位同目标的条目自动去重）; 列表为空 = 其余路由模型自动跟后。
+  JSON 手编 claudeAppDesktop.models 也走同一语义（name 填模型 selector 即可,
+  菜单 id 自动复用该模型的路由 id）。
 - 迁移提醒: profile tier 字段需与原 script 映射核对一致（如 sonnet: script 是
   glm-5.3-flash+额度回退, profile 是 deepseek——删 script 后以 profile 为准）。
   script 未删时其映射仍生效。
 - 允许列表: tier 槽位 id 会解析到 tier 目标（model-allowlist 播种）, Desktop 菜单可见性不受影响。
+- 四档选择器/额外槽位的模型下拉会按该 profile 的允许模型列表过滤（列表为空 = 不限）。
+- provider 自动刷新（autoFetchModels）现在会**对齐上游**: 基线里存在、上游 /models
+  已不再列出的模型从 provider.models 移除（removedModels）; 手动添加的（不在基线）
+  永不裁剪; 被裁剪的模型同时移出基线, 上游重新列出时会作为新增回归。
+- 保存 409（AppConfigConflictError）: UI 保存冲突时自动拉取最新配置 rebase 草稿并
+  重试一次; profile 对话框打开时错误只显示在对话框内, 不再打到页面横幅。
 
 ## 验证方式
 - 改 profile/模型后: `applyClaudeAppGateway` RPC → 跑 fix 脚本 → 检查

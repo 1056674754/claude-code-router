@@ -24,6 +24,7 @@ import type {
   PluginDependency,
   PluginMarketplaceEntry,
   ProviderAccountBrowserCredentialsMode,
+  ProviderCredentialCodexOauthConfig,
   ProviderModelMetadata,
   ProfileConfig,
   ProfileScope,
@@ -33,6 +34,7 @@ import type {
   RouterRuleOperator,
   RouterRuleRewriteOperation,
   RouterRuleType,
+  ClaudeAppDesktopModelSlot,
   TrayComponentVariants,
   TrayWindowModuleId,
   VirtualModelBaseModelMode,
@@ -138,6 +140,9 @@ export type AddProviderDraft = {
 
 export type ProviderCredentialDraft = {
   apiKey: string;
+  // ChatGPT (Codex) OAuth credential carried opaquely through the draft
+  // round-trip; rows with it do not need an API key.
+  codexOauth?: ProviderCredentialCodexOauthConfig;
   enabled: boolean;
   id: string;
   limitsText: string;
@@ -186,6 +191,7 @@ export type AddProfileDraft = {
   botPlatform: string;
   claudeSettingsText: string;
   configFile: string;
+  desktopSlots: ClaudeAppDesktopModelSlot[];
   envRows: KeyValueDraftRow[];
   fableModel: string;
   haikuModel: string;
