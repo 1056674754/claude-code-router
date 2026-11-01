@@ -1576,13 +1576,13 @@ function OverviewActivityGrid({
   const monthLabelSize = useElementSize(monthLabelRef);
   const showDayLabels = dimensions.width >= 2;
   const showMonthLabels = dimensions.height >= 2;
-  const dayLabels = [t("M"), "", t("W"), "", t("F"), "", ""];
+  const dayLabels = [t("Mon"), t("Tue"), t("Wed"), t("Thu"), t("Fri"), t("Sat"), t("Sun")];
   const cellGap = dimensions.height <= 1 ? 2 : dimensions.width >= 3 ? 4 : 3;
   const labelColumnWidth = showDayLabels ? 20 : 0;
   // Reserve the month label row's measured height plus its `mb-1` margin: a hard-coded
   // height under-reserves, which pushes the last activity row past the frame and clips it.
   const monthLabelBlockHeight = showMonthLabels ? (monthLabelSize.height || 20) + MONTH_LABEL_BOTTOM_MARGIN : 0;
-  const cellSize = activityGridCellSize({
+  const { cellHeight, cellWidth } = activityGridCellSize({
     availableHeight: gridFrameSize.height,
     availableWidth: gridFrameSize.width,
     cellGap,
@@ -1591,34 +1591,39 @@ function OverviewActivityGrid({
     monthLabelBlockHeight,
     weekCount: activity.weekCount
   });
-  const activityColumns = `repeat(${activity.weekCount}, ${cellSize}px)`;
+  const activityColumns = `repeat(${activity.weekCount}, ${cellWidth}px)`;
   const gridTemplateColumns = `${showDayLabels ? `${labelColumnWidth}px ` : ""}${activityColumns}`;
-  const gridWidth = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + activity.weekCount * cellSize + Math.max(0, activity.weekCount - 1) * cellGap;
+  const gridWidth = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + activity.weekCount * cellWidth + Math.max(0, activity.weekCount - 1) * cellGap;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" ref={gridFrameRef}>
-      {cellSize > 0 ? (
+      {cellWidth > 0 && cellHeight > 0 ? (
         <div className="min-w-0 overflow-visible">
           <div className="w-full max-w-full" style={{ width: `${gridWidth}px` }}>
             {showMonthLabels ? (
               <div
-                className="mb-1 grid text-[10px] font-medium leading-none text-muted-foreground"
+                className="relative mb-1 text-[10px] font-medium leading-none text-muted-foreground"
                 ref={monthLabelRef}
-                style={{
-                  columnGap: `${cellGap}px`,
-                  gridTemplateColumns: activityColumns,
-                  marginLeft: `${labelColumnWidth ? labelColumnWidth + cellGap : 0}px`
-                }}
+                style={{ height: monthLabelSize.height || 14 }}
               >
-                {activity.months.map((month) => (
-                  <span
-                    className="truncate"
-                    key={`${month.label}-${month.weekIndex}`}
-                    style={{ gridColumn: `${month.weekIndex + 1} / span ${Math.min(4, activity.weekCount - month.weekIndex)}` }}
-                  >
-                    {month.label}
-                  </span>
-                ))}
+                {activity.months.map((month, index) => {
+                  const left = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + month.weekIndex * (cellWidth + cellGap);
+                  const isLast = index === activity.months.length - 1;
+                  const fitsRight = left + month.label.length * 11 + 4 <= gridWidth;
+                  return (
+                    <span
+                      className="absolute whitespace-nowrap"
+                      key={`${month.label}-${month.weekIndex}`}
+                      style={{
+                        left: isLast && !fitsRight ? undefined : `${left}px`,
+                        right: isLast && !fitsRight ? 0 : undefined,
+                        top: 0
+                      }}
+                    >
+                      {month.label}
+                    </span>
+                  );
+                })}
               </div>
             ) : null}
             <div
@@ -1628,7 +1633,7 @@ function OverviewActivityGrid({
               style={{
                 gap: `${cellGap}px`,
                 gridTemplateColumns,
-                gridTemplateRows: `repeat(7, ${cellSize}px)`
+                gridTemplateRows: `repeat(7, ${cellHeight}px)`
               }}
             >
               {showDayLabels ? dayLabels.map((label, index) => (
@@ -1658,8 +1663,8 @@ function OverviewActivityGrid({
                     backgroundColor: overviewActivityColor(cell.intensity, cell.inObservedRange),
                     gridColumn: cell.weekIndex + (showDayLabels ? 2 : 1),
                     gridRow: cell.dayIndex + 1,
-                    height: `${cellSize}px`,
-                    width: `${cellSize}px`
+                    height: `${cellHeight}px`,
+                    width: `${cellWidth}px`
                   }}
                 />
               ))}
@@ -1692,19 +1697,21 @@ function activityGridCellSize({
   labelColumnWidth,
   monthLabelBlockHeight,
   weekCount
-}: ActivityGridCellSizeInput): number {
+}: ActivityGridCellSizeInput): { cellHeight: number; cellWidth: number } {
   if (weekCount <= 0) {
-    return 0;
+    return { cellHeight: 0, cellWidth: 0 };
   }
   if (availableHeight <= 0 || availableWidth <= 0) {
-    return fallbackCellSize;
+    return { cellHeight: fallbackCellSize, cellWidth: fallbackCellSize };
   }
 
+  // Fill the card in both axes: cells stretch independently so the grid
+  // spans the full width instead of leaving a dead zone on the right.
   const widthForCells = availableWidth - labelColumnWidth - (labelColumnWidth ? cellGap : 0) - Math.max(0, weekCount - 1) * cellGap;
   const heightForCells = availableHeight - monthLabelBlockHeight - 6 * cellGap;
-  const maxByWidth = widthForCells / weekCount;
-  const maxByHeight = heightForCells / 7;
-  return Math.max(1, Math.floor(Math.min(maxByWidth, maxByHeight)));
+  const cellWidth = Math.max(1, Math.floor(widthForCells / weekCount));
+  const cellHeight = Math.max(1, Math.floor(heightForCells / 7));
+  return { cellHeight, cellWidth };
 }
 
 function formatActivityTokenCount(value: number): string {
@@ -2302,7 +2309,7 @@ function overviewWidgetOverlaySizeClass(size: OverviewWidgetSize): string {
   return cn(overviewWidgetOverlayWidthClass(width), overviewWidgetOverlayHeightClass(height));
 }
 
-type OverviewWidgetDimensions = { height: 1 | 2 | 3 | 4; width: 1 | 2 | 3 | 4 };
+export type OverviewWidgetDimensions = { height: 1 | 2 | 3 | 4; width: 1 | 2 | 3 | 4 };
 
 const overviewCacheColor = "#af52de";
 
@@ -3258,7 +3265,7 @@ function ProviderAccountBentoOverflowTile({ count }: { count: number }) {
   );
 }
 
-function ProviderAccountLogo({
+export function ProviderAccountLogo({
   account,
   className,
   providers
@@ -3300,7 +3307,7 @@ function providerAccountIconUrl(account: ProviderAccountSnapshot, providers: Gat
   return provider ? providerDisplayIcon(provider) : "";
 }
 
-function ProviderAccountRefreshButton({
+export function ProviderAccountRefreshButton({
   account,
   className,
   iconClassName,
@@ -3350,12 +3357,13 @@ function formatProviderAccountUpdatedAt(value: string): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-function ProviderAccountMeterLine({
+export function ProviderAccountMeterLine({
   account,
   compact = false,
   dimensions,
   meter,
   onRefresh,
+  resetInteraction = "expand",
   single = false
 }: {
   account: ProviderAccountSnapshot;
@@ -3363,17 +3371,27 @@ function ProviderAccountMeterLine({
   dimensions: OverviewWidgetDimensions;
   meter: ReturnType<typeof providerAccountMetersForDisplay>[number];
   onRefresh?: () => void | Promise<void>;
+  /** "expand": inline disclosure of reset cards (dashboard). "dialog": clicking the meter opens the reset dialog directly (embedded sub-lists). */
+  resetInteraction?: "expand" | "dialog";
   single?: boolean;
 }) {
   const t = useAppText();
   const progress = isProviderAccountQuotaMeter(meter) ? providerAccountMeterProgress(meter) : undefined;
-  const canExpandDetails = dimensions.height >= 2 && isProviderAccountManualResetMeter(meter) && (meter.details?.length ?? 0) > 0;
+  const manualResetWithDetails = isProviderAccountManualResetMeter(meter) && (meter.details?.length ?? 0) > 0;
+  const dialogTrigger = resetInteraction === "dialog" && manualResetWithDetails;
+  const canExpandDetails = !dialogTrigger && dimensions.height >= 2 && manualResetWithDetails;
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [resetDialogDetail, setResetDialogDetail] = useState<NonNullable<ProviderAccountMeter["details"]>[number]>();
   const title = formatProviderAccountMeterTitle(meter, t);
   const detailsId = `provider-account-meter-${providerAccountSnapshotKey(account)}-${meter.id}-details`.replace(/[^a-zA-Z0-9_-]/g, "-");
   const titleClassName = cn("min-w-0 truncate font-medium text-muted-foreground", compact ? "text-[10px]" : single && dimensions.height >= 2 ? "text-[13px]" : "text-[12px]");
   const valueClassName = cn("shrink-0 font-semibold tracking-tight", compact ? "text-[12px]" : single && dimensions.height >= 2 ? "text-[18px]" : "text-[15px]");
+  const openResetDialog = () => {
+    const detail = meter.details?.find((item) => item.redeemable) ?? meter.details?.[0];
+    if (detail) {
+      setResetDialogDetail(detail);
+    }
+  };
   const meterSummary = (
     <>
       <div className="flex min-w-0 items-center gap-1.5">
@@ -3390,13 +3408,19 @@ function ProviderAccountMeterLine({
 
   return (
     <div className="min-w-0 overflow-hidden">
-      {canExpandDetails ? (
+      {canExpandDetails || dialogTrigger ? (
         <button
-          aria-controls={detailsId}
-          aria-expanded={detailsOpen}
-          aria-label={`${t(detailsOpen ? "Collapse" : "Expand")} ${title}`}
+          aria-controls={canExpandDetails ? detailsId : undefined}
+          aria-expanded={canExpandDetails ? detailsOpen : undefined}
+          aria-label={dialogTrigger ? `${t("Reset")} ${title}` : `${t(detailsOpen ? "Collapse" : "Expand")} ${title}`}
           className={cn("group -mx-1 flex w-[calc(100%+8px)] min-w-0 items-end justify-between gap-3 rounded-md px-1 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25", compact ? "py-0" : "py-0.5")}
-          onClick={() => setDetailsOpen((current) => !current)}
+          onClick={() => {
+            if (dialogTrigger) {
+              openResetDialog();
+              return;
+            }
+            setDetailsOpen((current) => !current);
+          }}
           type="button"
         >
           {meterSummary}
