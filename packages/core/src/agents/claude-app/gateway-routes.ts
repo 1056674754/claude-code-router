@@ -404,21 +404,7 @@ export function decodeClaudeAppGatewayRouteId(routeId: string): string | undefin
  * safe. Exported for the UI, which warns about unsafe declared slots without
  * blocking them.
  */
-export function isClaudeAppDesktopSafeModelId(model: string): boolean {
-  const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model.trim());
-  if (!normalized) {
-    return false;
-  }
-  const lower = normalized.toLowerCase();
-  if (!lower.includes("/") && claudeAppGatewayNativeModelNameIsSafe(lower)) {
-    return true;
-  }
-  if (lower.startsWith("anthropic/claude-")) {
-    const bare = lower.slice("anthropic/".length);
-    return claudeAppGatewayNativeModelNameIsSafe(bare) || /^claude-ccr(?:\d+)?-h[0-9a-f]+$/.test(bare);
-  }
-  return false;
-}
+export { isClaudeAppDesktopSafeModelId } from "@ccr/core/contracts/app";
 
 function claimClaudeAppGatewayRouteId(
   routeId: string | undefined,

@@ -1,4 +1,4 @@
-import { isClaudeAppDesktopSafeModelId } from "@ccr/core/agents/claude-app/gateway-routes";
+import { isClaudeAppDesktopSafeModelId } from "@ccr/core/contracts/app";
 import type { ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
 import { Checkbox } from "@/components/ui/checkbox";
 import {

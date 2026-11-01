@@ -939,6 +939,30 @@ export function knownGatewayPluginDefaultSurfaces(id: string): GatewayPluginSurf
   return surfaces ? { ...surfaces } : undefined;
 }
 
+// Desktop 1.12603.1+ validates every inferenceModels entry against a role
+// whitelist (sonnet/opus/haiku/fable) and can fail the whole model group when
+// one id looks foreign. Native claude-* names and anthropic/claude-* ids
+// (CCR's encoded gateway route ids included) pass; anything else risks the
+// menu. Kept dependency-free so the UI bundle can import it at runtime.
+const claudeAppDesktopNativeSafeModelPattern =
+  /^claude-(?:3(?:-[57])?-(?:haiku|sonnet|opus)|(?:haiku|sonnet|opus|fable)(?:[-.:@0-9a-z]+)?|code(?:[-.:@0-9a-z]+)?)$/i;
+
+export function isClaudeAppDesktopSafeModelId(model: string): boolean {
+  const normalized = model.trim().replace(/\[1m\]$/i, "").trim();
+  if (!normalized) {
+    return false;
+  }
+  const lower = normalized.toLowerCase();
+  if (!lower.includes("/") && claudeAppDesktopNativeSafeModelPattern.test(lower)) {
+    return true;
+  }
+  if (lower.startsWith("anthropic/claude-")) {
+    const bare = lower.slice("anthropic/".length);
+    return claudeAppDesktopNativeSafeModelPattern.test(bare) || /^claude-ccr(?:\d+)?-h[0-9a-f]+$/.test(bare);
+  }
+  return false;
+}
+
 export function knownGatewayPluginDefaultApps(id: string): GatewayPluginAppConfig[] | undefined {
   const pluginId = id.trim().toLowerCase();
   if (pluginId === CLAUDE_DESIGN_PLUGIN_ID) {
