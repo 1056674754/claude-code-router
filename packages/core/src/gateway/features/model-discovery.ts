@@ -4,7 +4,7 @@
 import type { IncomingHttpHeaders } from "node:http";
 import { BUILTIN_FUSION_VISION_TOOL_NAME, effectiveContextWindowPercentFor, isGatewayProviderEnabled } from "@ccr/core/contracts/app";
 import type { ApiKeyConfig, AppConfig, ProfileConfig, ProviderModelMetadata, VirtualModelProfileConfig } from "@ccr/core/contracts/app";
-import { buildClaudeAppGatewayModelRoutes, resolveClaudeAppGatewayRouteModel } from "@ccr/core/agents/claude-app/gateway-routes";
+import { buildClaudeAppGatewayModelRoutes, buildClaudeAppTierSlotRoutes, resolveClaudeAppGatewayRouteModel } from "@ccr/core/agents/claude-app/gateway-routes";
 import { modelRegistryForConfig, normalizeRouteSelector, parseProviderModelSelector } from "@ccr/core/routing/model-registry";
 import { findModelCatalogEntry, findProviderModelCatalogEntry, modelCatalogMaxInputTokens, modelCatalogMaxOutputTokens, readCatalogCapability, type ModelCatalogEntry } from "@ccr/core/gateway/model-catalog";
 import { isRecord, stringValue } from "@ccr/core/gateway/internal/value";
@@ -304,11 +304,23 @@ function createClaudeAppGatewayModelsResponse(
   config: AppConfig,
   options: { claudeCode?: boolean; contextArchiveCompact?: boolean; profile?: ProfileConfig } = {}
 ): Record<string, unknown> {
-  const routes = buildClaudeAppGatewayModelRoutes(config, {
+  const routeOptions = {
     ...claudeAppGatewayModelRouteOptions,
     defaultTargetModel: options.profile?.model
-  })
-    .filter((route) => isModelAllowedForProfile(config, options.profile, route.targetModel));
+  };
+  // Tier slots derive from the profile's tier fields and lead the published
+  // list: the Desktop validates menu selections against this response, so
+  // omitting them makes tier picking fail client-side. They bypass the
+  // allowlist — the tier fields and the allowlist come from the same profile
+  // dialog, and filtering one by the other is circular.
+  const tierRoutes = buildClaudeAppTierSlotRoutes(config, routeOptions);
+  const tierSlotIds = new Set(tierRoutes.map((route) => route.id.toLowerCase()));
+  const routes = [
+    ...tierRoutes,
+    ...buildClaudeAppGatewayModelRoutes(config, routeOptions)
+      .filter((route) => !tierSlotIds.has(route.id.toLowerCase()))
+      .filter((route) => isModelAllowedForProfile(config, options.profile, route.targetModel))
+  ];
   const data = routes.map((route) => {
     const catalogId = stripClaudeCodeOneMillionContextSuffix(route.targetModel);
     const modelDiscovery = providerModelDiscoveryForSelector(config, catalogId);

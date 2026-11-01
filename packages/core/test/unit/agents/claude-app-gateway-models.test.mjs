@@ -1007,3 +1007,51 @@ test("claudeAppDesktop declared extras compose tier slots plus exactly those ent
   const k3 = menu.find((item) => item.name === flashRoute.id);
   assert.equal(k3.labelOverride, "k3");
 });
+
+test("tier slots are published to the models response even when the allowlist excludes their targets", () => {
+  const config = {
+    Providers: [
+      { models: ["glm-5.3", "glm-5.3-flash"], name: "Zhipu" },
+      { models: ["gpt-6-astra"], name: "Codex ChatGPT" }
+    ],
+    profile: {
+      enabled: true,
+      profiles: [{
+        agent: "claude-code",
+        enabled: true,
+        scope: "global",
+        id: "claude-code-global",
+        model: "Zhipu/glm-5.3-flash",
+        name: "Claude Code",
+        fableModel: "Codex ChatGPT/gpt-6-astra",
+        haikuModel: "",
+        opusModel: "",
+        sonnetModel: ""
+      }]
+    },
+    // Allowlist deliberately excludes the Codex tier target: tier fields are
+    // explicit config from the same dialog and must not be filtered circularly.
+    availableModelsHint: undefined,
+    Providers_allowlistHint: undefined
+  };
+  config.profile.profiles[0].availableModels = [
+    "Zhipu/glm-5.3",
+    "Zhipu/glm-5.3-flash"
+  ];
+
+  const response = createGatewayModelsResponse(config, { "user-agent": "claude-cli/2.1.215" });
+  const ids = (response.data ?? []).map((item) => item.id);
+  // The tier slot leads even though "Codex ChatGPT/gpt-6-astra" is not in the
+  // profile's allowed model list — otherwise Desktop tier picking fails
+  // client-side before the request ever reaches the gateway. The claudeCode
+  // surface exposes the 1M-context variant id for 1M-capable tiers.
+  assert.ok(
+    ids[0] === "claude-fable-5" || ids[0] === "claude-fable-5[1m]",
+    `expected the fable tier slot first, got ${ids[0]}`
+  );
+  const flashRoute = buildClaudeAppGatewayModelRoutes(config)
+    .find((route) => route.targetModel === "Zhipu/glm-5.3-flash");
+  assert.ok(flashRoute);
+  const flashIds = [flashRoute.id, `${flashRoute.id}[1m]`];
+  assert.ok(ids.some((id) => flashIds.includes(id)), `routed model missing from publication: ${ids.length} ids`);
+});
