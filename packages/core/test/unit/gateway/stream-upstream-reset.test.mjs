@@ -148,3 +148,61 @@ test("gateway pipeline closes the client response when the upstream resets mid-s
     globalThis.fetch = originalFetch;
   }
 });
+
+// A relay 400 whose body another consumer already disturbed before the
+// pipeline could buffer it (2026-11-01: "Body is unusable: Body has already
+// been read" on relay 4xx responses).
+async function withPreDisturbedUpstream(run) {
+  const body = JSON.stringify({ error: { message: "upstream rejected the request" } });
+  const disturbed = new Response(body, {
+    headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+    status: 400
+  });
+  await disturbed.text();
+  const server = http.createServer(() => {
+    throw new Error("upstream should never be reached; fetch is mocked");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  try {
+    return await run(url, disturbed);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test("a disturbed upstream error body still yields a fallback error response", async () => {
+  const config = createDefaultAppConfig();
+  config.observability.requestLogs = false;
+  config.contextArchive.enabled = false;
+  const pipeline = new GatewayRequestPipeline({
+    getBrowserWebSearchMcpIntegration: () => undefined,
+    getConfig: () => config,
+    getCoreAuthToken: () => "test-core-token",
+    getPlugin: () => ({}),
+    getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
+  });
+  const originalFetch = globalThis.fetch;
+  const chunks = [];
+  try {
+    await assertNoUncaughtException(() => withPreDisturbedUpstream(async (url, disturbed) => {
+      globalThis.fetch = async () => disturbed;
+      const request = Readable.from([]);
+      request.method = "GET";
+      request.url = "/v1/messages/resp-disturbed";
+      request.headers = {};
+      const response = new Writable({
+        write(chunk, _encoding, done) { chunks.push(String(chunk)); done(); }
+      });
+      response.writeHead = () => response;
+      await pipeline.proxyRequest(request, response, "/v1/messages/resp-disturbed");
+      const payload = chunks.join("");
+      assert.ok(payload.includes("error body could not be relayed"), `unexpected payload: ${payload.slice(0, 160)}`);
+      assert.ok(payload.includes("upstream rejected the request") === false || payload.includes("relay"), "fallback payload expected");
+      assert.equal(response.writableEnded, true);
+      assert.equal(response.destroyed, false);
+    }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

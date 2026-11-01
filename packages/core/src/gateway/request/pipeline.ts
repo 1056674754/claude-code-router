@@ -976,16 +976,27 @@ export class GatewayRequestPipeline {
         try {
           bufferedErrorText = await upstreamResponse.text();
         } catch (error) {
-          response.writeHead(upstreamResponse.status, Object.fromEntries(filteredResponseHeaders(responseHeaders)));
-          finalizeOpenRouterDiscountSelection(false);
-          writeRequestLog(upstreamResponse.status, responseHeaders, "", false, formatUpstreamErrorForLog(error, {
+          // The upstream error body was disturbed before it could be buffered
+          // (a racing consumer cancelled or read it). The client must still see
+          // a real error instead of an empty 200-style body or a reset socket.
+          const diagnostic = formatUpstreamErrorForLog(error, {
             attempts: upstreamResult.failedAttempts.length + 1,
             elapsedMs: Date.now() - startedAt,
             fallbackFailures: upstreamResult.failedAttempts.length,
             operation: "fetch",
             responseStarted: true
-          }));
-          response.end();
+          });
+          console.warn(`[gateway] Upstream error body unavailable (${upstreamResponse.status}): ${diagnostic}`);
+          const fallbackBody = JSON.stringify({
+            error: {
+              message: `Upstream returned ${upstreamResponse.status} but its error body could not be relayed (${diagnostic}). Retry the request; see the CCR request log for the upstream payload.`
+            }
+          });
+          responseHeaders.delete("content-length");
+          response.writeHead(upstreamResponse.status, Object.fromEntries(filteredResponseHeaders(responseHeaders)));
+          finalizeOpenRouterDiscountSelection(false);
+          writeRequestLog(upstreamResponse.status, responseHeaders, fallbackBody, false, diagnostic);
+          response.end(fallbackBody);
           return;
         }
         const outboundErrorText = appendAggregateErrorAttemptSummary(bufferedErrorText, upstreamResult.failedAttempts) ?? bufferedErrorText;
@@ -1086,6 +1097,7 @@ export class GatewayRequestPipeline {
       const responseContentType = responseHeaders.get("content-type") ?? "";
       const sseErrorDetector = createSseErrorDetector(responseContentType);
       let streamDetectedError: string | undefined;
+      let clientBytesReceived = 0;
       const sseTailGuard = responseProtocol === "anthropic_messages" && responseContentType.includes("text/event-stream")
         ? createAnthropicStreamErrorTailGuard({
           clientResponse: response,
@@ -1096,6 +1108,7 @@ export class GatewayRequestPipeline {
       const clientExperienceMeter = createStreamExperienceMeter({
         contentType: responseHeaders.get("content-type") ?? undefined,
         onChunk: (chunk) => {
+          clientBytesReceived += chunk.length;
           sampler.append(chunk);
           streamDetectedError ??= sseErrorDetector.append(chunk);
         },
@@ -1193,10 +1206,24 @@ export class GatewayRequestPipeline {
         // (.pipe() does not end the client response when a stage errors, so an
         // upstream reset would otherwise leave the client waiting forever.)
         // Destroy rather than end: the chunked terminator end() writes would
-        // make the truncated stream look complete. The terminal error frame is
+        // make a truncated stream look complete. The terminal error frame is
         // written synchronously above; give it a tick to reach the socket, then
-        // close hard.
+        // close hard. When the client already received the full payload (the
+        // upstream body was fully delivered before the trailing error — e.g. a
+        // disturbed-body race), end gracefully instead: resetting a complete
+        // response turns a handled upstream error into a bogus client-side
+        // ECONNRESET "connection problem".
         sseTailGuard?.writeTerminalError();
+        const contentLengthHeader = Number(responseHeaders.get("content-length"));
+        const payloadFullyDelivered = Number.isFinite(contentLengthHeader) &&
+          contentLengthHeader > 0 &&
+          clientBytesReceived >= contentLengthHeader;
+        if (payloadFullyDelivered) {
+          if (!clientDisconnected && !response.destroyed && !response.writableEnded) {
+            response.end();
+          }
+          return;
+        }
         if (!clientDisconnected && !response.destroyed && !response.writableEnded) {
           setImmediate(() => {
             if (!response.destroyed && !response.writableEnded) {
