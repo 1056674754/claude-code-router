@@ -921,7 +921,7 @@ export function AddProfileForm({
         </Field>
         {draft.agent === "claude-code" ? (
           <>
-            <Field label={t("Default model")} requirement="required" requirementLabel={requiredFieldLabel}>
+            <Field className="sm:col-span-2" label={t("Default model")} requirement="required" requirementLabel={requiredFieldLabel}>
               <ModelSelector
                 placeholder={modelPlaceholder || t("Select default model")}
                 providers={tierSelectableProviders}
