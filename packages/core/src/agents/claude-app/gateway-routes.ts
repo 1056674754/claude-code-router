@@ -276,25 +276,15 @@ export function buildClaudeAppTierSlotRoutes(
     }
     return [{ slot, target: canonicalClaudeAppGatewayTargetModel(target, config) ?? target }];
   });
-  // One real model appears once in the menu: a later tier whose target an
-  // earlier tier already covers is skipped (request resolution still maps
-  // its slot id to the same target).
-  const seenTargets = new Set<string>();
-  const routes: ClaudeAppGatewayModelRoute[] = [];
-  for (const { slot, target } of tierEntries) {
-    const targetKey = stripClaudeAppGatewayOneMillionContextSuffix(target).toLowerCase();
-    if (seenTargets.has(targetKey)) {
-      continue;
-    }
-    seenTargets.add(targetKey);
-    routes.push({
-      displayName: claudeAppGatewayDisplayNames([target], config, options)[0],
-      id: slot.slotId,
-      oneMillionContext: claudeAppGatewaySupportsOneMillionContext(target, config, options),
-      targetModel: target
-    });
-  }
-  return routes;
+  // Faithful to the user's selection: every non-empty tier field gets its own
+  // slot, even when several tiers point at the same model — collapsing them
+  // would hide choices the user explicitly made.
+  return tierEntries.map(({ slot, target }) => ({
+    displayName: claudeAppGatewayDisplayNames([target], config, options)[0],
+    id: slot.slotId,
+    oneMillionContext: claudeAppGatewaySupportsOneMillionContext(target, config, options),
+    targetModel: target
+  }));
 }
 
 export function resolveClaudeAppTierSlotModel(

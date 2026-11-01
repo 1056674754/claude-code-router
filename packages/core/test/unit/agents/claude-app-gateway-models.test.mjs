@@ -899,16 +899,18 @@ test("claude app tier slots derive from the active global claude-code profile", 
   };
 
   const tierRoutes = buildClaudeAppTierSlotRoutes(config);
-  // Order is fable → opus → sonnet → haiku; opus collapses onto fable (same
-  // target) and the empty haiku field is skipped — no padding to four.
-  assert.deepEqual(tierRoutes.map((route) => route.id), ["claude-fable-5", "claude-sonnet-5"]);
-  assert.deepEqual(tierRoutes.map((route) => route.targetModel), ["Zhipu/glm-5.3", "Ctyun/deepseek-v4.1"]);
+  // Order is fable → opus → sonnet → haiku; the empty haiku field is skipped.
+  // Tiers pointing at the same model stay distinct — the menu shows the
+  // user's selection faithfully instead of collapsing opus onto fable.
+  assert.deepEqual(tierRoutes.map((route) => route.id), ["claude-fable-5", "claude-opus-5", "claude-sonnet-5"]);
+  assert.deepEqual(tierRoutes.map((route) => route.targetModel), ["Zhipu/glm-5.3", "Zhipu/glm-5.3", "Ctyun/deepseek-v4.1"]);
 
   const menu = buildClaudeAppDesktopInferenceModels(config);
   // Tier slots first, then the remaining routed models minus tier targets
   // (glm-5.3 is covered by the fable slot, deepseek by sonnet).
   assert.deepEqual(menu.map((item) => item.name), [
     "claude-fable-5",
+    "claude-opus-5",
     "claude-sonnet-5",
     ...buildClaudeAppGatewayModelRoutes(config)
       .filter((route) => route.targetModel === "Zhipu/glm-5.3-flash")

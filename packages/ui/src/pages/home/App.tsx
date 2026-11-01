@@ -23,9 +23,10 @@ import {
   OverviewWidgetConfig, parseProviderAccountDraft, parseProviderExtraJsonDraft, pluginConfigPatchFromSettingsDraft,
   providerCredentialsFromDraft,
   persistLanguagePreference, PluginInstallCandidate, PluginMarketplaceEntry, PluginRoutingConfigTarget, PluginSettingsDraft, presetCapabilitiesFromDraft,
-  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftDesktopSlots, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
+  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
   profileOpenCommandFallback, profileOpenSurfaces, ProviderAccountSnapshot, providerApiKeySafetyIssue, ProviderConnectivityCheckReport, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerIdentitySafetyIssue, providerProbeCandidates,
   providerAutoFetchKnownModelsForSave, providerBaseUrl, providerCapabilitiesForProtocols, providerCapabilitiesForSave, providerConnectivityApiKeyFromDraft, providerConnectivityProviderPlugins, providerGlobalBaseUrlForProbe, providerManualFieldsForSave, providerProbeCandidatesApiKeySafetyIssue, providerProbeHasSupportedProtocol, providerProbeInputKey, providerProtocolOptions, providerSelectableProtocolsFromProbe, ProxyNetworkSnapshot,
+  sortProviderCredentialsForUi,
   ProxyStatus, readLanguagePreference, RequestLogListFilter, RequestLogPage, ResolvedLanguage,
   ResolvedTheme, resolvePluginInstallPlan, resolveProviderDeepLinkCatalogModels, removeLocalAgentProviderPluginsForProvider, RouterRule, routingRuleFromDraft, SettingsPageId,
   setProviderPresets, splitLines, translateAppErrorMessage, translateText, TrayBalanceProgressConfig, TrayWidgetConfig,
@@ -40,7 +41,6 @@ import {
   AppDialogStack, FeedbackStack, LightToast, MainLayout, OnboardingLayout, PersistenceFeedback, shouldCheckForUpdateOnOpen
 } from "./components/index";
 import { hasAvailableGatewayModels } from "@ccr/core/contracts/app";
-import type { ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
 
 type ProfileOpenDialogState = {
   busy?: "" | "cli" | "app";
@@ -293,6 +293,7 @@ function App() {
   const [usageStats, setUsageStats] = useState<UsageStatsSnapshot>(fallbackUsageStats);
   const [providerAccountSnapshots, setProviderAccountSnapshots] = useState<ProviderAccountSnapshot[]>([]);
   const [providerAccountRefreshing, setProviderAccountRefreshing] = useState(false);
+  const [providerAccountsLoadFailed, setProviderAccountsLoadFailed] = useState(false);
   const updateActionBusyRef = useRef(false);
   const usageStatsRequestId = useRef(0);
   const resolvedLanguage = languagePreference === "system" ? systemLanguage : languagePreference;
@@ -534,6 +535,7 @@ function App() {
   useEffect(() => {
     if (!window.ccr) {
       setProviderAccountSnapshots([]);
+      setProviderAccountsLoadFailed(false);
       return;
     }
 
@@ -543,11 +545,14 @@ function App() {
         .then((snapshots) => {
           if (!cancelled) {
             setProviderAccountSnapshots(snapshots);
+            setProviderAccountsLoadFailed(false);
           }
         })
         .catch(() => {
+          // Keep the previous snapshots so a transient failure does not blank
+          // the usage UI; surface the failure via the load-failed flag.
           if (!cancelled) {
-            setProviderAccountSnapshots([]);
+            setProviderAccountsLoadFailed(true);
           }
         });
     };
@@ -565,11 +570,32 @@ function App() {
     setProviderAccountRefreshing(true);
     try {
       setProviderAccountSnapshots(await loadProviderAccountSnapshots(true));
+      setProviderAccountsLoadFailed(false);
     } catch {
-      setProviderAccountSnapshots([]);
+      setProviderAccountsLoadFailed(true);
     } finally {
       setProviderAccountRefreshing(false);
     }
+  }
+
+  async function refreshAccountSnapshotsFor(providerName: string) {
+    if (!window.ccr) {
+      return;
+    }
+    const name = providerName.trim().toLowerCase();
+    if (!name) {
+      return;
+    }
+    const fresh = await window.ccr.getProviderAccountSnapshots(providerName, { forceRefresh: true }).catch(() => undefined);
+    if (!fresh) {
+      setProviderAccountsLoadFailed(true);
+      return;
+    }
+    setProviderAccountsLoadFailed(false);
+    setProviderAccountSnapshots((current) => [
+      ...current.filter((snapshot) => snapshot.provider.trim().toLowerCase() !== name),
+      ...fresh
+    ]);
   }
 
   const requestLogsEnabled = Boolean(draftConfig.observability.requestLogs);
@@ -1967,6 +1993,32 @@ function App() {
     void persistConfig(next, setActionError);
   }
 
+  // "Use this account": moves the credential to the front of the provider's
+  // credential pool (priority 1..n), so routing prefers it until switched.
+  function setPreferredProviderCredential(providerName: string, credentialId: string) {
+    const next = buildConfigUpdate((config) => {
+      const index = config.Providers.findIndex((provider) => provider.name.trim().toLowerCase() === providerName.trim().toLowerCase());
+      const provider = config.Providers[index];
+      if (!provider?.credentials?.length) {
+        return config;
+      }
+      const sorted = sortProviderCredentialsForUi(provider.credentials);
+      if (sorted[0]?.id === credentialId || sorted.length < 2) {
+        return config;
+      }
+      const target = sorted.find((credential) => credential.id === credentialId);
+      if (!target) {
+        return config;
+      }
+      const reordered = [target, ...sorted.filter((credential) => credential !== target)]
+        .map((credential, position) => ({ ...credential, priority: position + 1 }));
+      config.Providers[index] = { ...provider, credentials: reordered };
+      return config;
+    });
+    setConfigDraft(next);
+    void persistConfig(next, setActionError);
+  }
+
   function updateProviderModelDescription(providerIndex: number, model: string, description: string) {
     const next = buildConfigUpdate((config) => {
       const provider = config.Providers[providerIndex];
@@ -2800,10 +2852,7 @@ function App() {
   function openAddProfileDialog(agent: ProfileConfig["agent"] = profileAgentTab) {
     const resolvedAgent = isProfileAgentAvailable(agent) ? agent : defaultAvailableProfileAgent;
     setProfileAgentTab(resolvedAgent);
-    setProfileDraft(profileDraftWithDetectedAppPath({
-      ...createProfileDraft(resolvedAgent),
-      desktopSlots: (draftConfig.claudeAppDesktop?.models ?? []).map((slot) => typeof slot === "string" ? { name: slot } : slot)
-    }, appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
+    setProfileDraft(profileDraftWithDetectedAppPath(createProfileDraft(resolvedAgent), appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
     setProfileActionError("");
     setProfileAddOpen(true);
   }
@@ -2814,10 +2863,7 @@ function App() {
       return;
     }
     setProfileEditIndex(index);
-    setProfileEditDraft(profileDraftWithDetectedAppPath({
-      ...createProfileDraftFromProfile(profile, draftConfig.botConfigs),
-      desktopSlots: (draftConfig.claudeAppDesktop?.models ?? []).map((slot) => typeof slot === "string" ? { name: slot } : slot)
-    }, appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
+    setProfileEditDraft(profileDraftWithDetectedAppPath(createProfileDraftFromProfile(profile, draftConfig.botConfigs), appInfo.chatgptAppPath, appInfo.opencodeAppPath, appInfo.workbuddyAppPath));
     setProfileActionError("");
   }
 
@@ -3079,7 +3125,7 @@ function App() {
     const existingProfile = onboardingProfileIndex >= 0 ? draftConfig.profile.profiles[onboardingProfileIndex] : undefined;
     const profile = profileConfigFromDraft(profileDraft, draftConfig.profile.profiles, existingProfile, draftConfig.botConfigs);
     setProfileAgentTab(profile.agent);
-    const next = buildConfigUpdate((config) => withClaudeAppDesktopExtras({
+    const next = buildConfigUpdate((config) => ({
       ...config,
       profile: {
         ...config.profile,
@@ -3093,7 +3139,7 @@ function App() {
           return enforceSingleEnabledGlobalProfilePerAgent(profiles, profileIndex);
         })()
       }
-    }, profileDraft.agent === "claude-code" ? profileDraftDesktopSlots(profileDraft) : undefined));
+    }));
     try {
       if (!(await persistConfig(next, setProfileActionError, { applyProfile: true }, "form"))) {
         return false;
@@ -3137,7 +3183,7 @@ function App() {
     }
     const nextProfile = profileConfigFromDraft(profileEditDraft, draftConfig.profile.profiles, currentProfile, draftConfig.botConfigs);
     setProfileAgentTab(nextProfile.agent);
-    const next = buildConfigUpdate((config) => withClaudeAppDesktopExtras((() => {
+    const next = buildConfigUpdate((config) => {
       const profiles = [...config.profile.profiles];
       profiles[profileEditIndex] = nextProfile;
       return {
@@ -3147,7 +3193,7 @@ function App() {
           profiles: enforceSingleEnabledGlobalProfilePerAgent(profiles, profileEditIndex)
         }
       };
-    })(), profileEditDraft.agent === "claude-code" ? profileDraftDesktopSlots(profileEditDraft) : undefined));
+    });
     try {
       if (!(await persistConfig(next, setProfileActionError, undefined, "form"))) {
         return false;
@@ -3159,22 +3205,6 @@ function App() {
     } finally {
       setProfileSubmitBusy("");
     }
-  }
-
-  // Claude Desktop extra slots are global config (claudeAppDesktop.models) but
-  // edited from the claude-code profile dialog: tier slots always derive from
-  // the profile's tier fields; these entries follow them in the menu. An empty
-  // list removes the declaration so every remaining routed model follows.
-  function withClaudeAppDesktopExtras(config: AppConfig, extras: ClaudeAppDesktopModelSlot[] | undefined): AppConfig {
-    if (extras === undefined) {
-      return config;
-    }
-    if (extras.length === 0) {
-      const rest = { ...config };
-      delete rest.claudeAppDesktop;
-      return rest;
-    }
-    return { ...config, claudeAppDesktop: { models: extras } };
   }
 
   function updateProfileItem(index: number, patch: Partial<ProfileConfig>) {
@@ -3374,11 +3404,15 @@ function App() {
                 },
                 providers: {
                   accountSnapshots: providerAccountSnapshots,
+                  accountSnapshotsLoadFailed: providerAccountsLoadFailed,
+                  accountSnapshotsRefreshing: providerAccountRefreshing,
                   addProvider: openAddProviderDialog,
                   editProvider: openEditProviderDialog,
                   notify: showToast,
                   providers,
+                  refreshAccountSnapshotsFor,
                   removeProvider: setProviderDeleteIndex,
+                  setPreferredCredential: setPreferredProviderCredential,
                   setProviderEnabled
                 },
                 routing: {

@@ -65,6 +65,14 @@ token 解析:CCR 自有账号存储 `~/.claude-code-router/codex-oauth-accounts/
 - 引擎(`@the-next-ai/ai-gateway`)请求期也会内存刷新(无回调可观测),store
   token 可能短暂落后——以编译期刷新+写回为主通道。
 - 不碰 `~/.codex/config.toml`、不碰 KNOWN-ISSUES #3 的接管逻辑;cc-switch 零改动。
+- **每账号用量/重置已补齐(2026-11-01 晚)**: account-service 快照目标/物化路径
+  codexOauth 感知(每凭据一个快照, 按凭据 accountId 解析 token), 重置请求按
+  credentialId 定向, 旧单账号插件劫持防护, probe 刷新落盘 store, 托盘进度图标
+  取最差账号, codex 账号卡新增 `codex-ccr-usage` local-estimate connector
+  (CCR 归因的每账号 30d tokens/requests, limit-less 窗口——
+  `isCodexAccountConnector` 已兼容, 否则会卡死账号配置自动升级)。
+  注意: 编辑对话框"验证"对 OAuth 池用首个账号探活; "刷新模型"仍走 live 登录
+  (池化的模型刷新未做)。构建后记得 `git checkout -- packages/core/models.json`。
 
 ## 已做的 workaround 脚本（理解现状用）- ~/.claude-code-router/fix-desktop-model-names.py — **已可退休**（#1/#2 修复后不再需要;
   若仍要用, 注意它写的 4 个槽位现在可直接在 Profiles 页 UI 配置）。
@@ -82,17 +90,17 @@ claude-sonnet-5/claude-haiku-4-5 槽位（fable→opus→sonnet→haiku 序; 字
 已含 [1m] 变体逻辑与 prefer1m）。请求侧: tier 槽位 id 在**策略链中 Router.rules 之后**
 解析到对应 tier 字段——显式规则/script 永远优先, 推导只是兜底。
 规则:
-- **claudeAppDesktop.models 现在是"额外槽位"列表**（2026-11-01 二次改版）: 在
-  claude-code profile 编辑模态框里配置（Haiku 字段下方 section, 行 = 显示名 +
-  模型选择器 + 1M + 排序）。菜单 = 官方四档位（tier 字段推导）+ 恰好这些额外
-  槽位（与档位同目标的条目自动去重）; 列表为空 = 其余路由模型自动跟后。
-  JSON 手编 claudeAppDesktop.models 也走同一语义（name 填模型 selector 即可,
-  菜单 id 自动复用该模型的路由 id）。
+- **claudeAppDesktop.models 为空（现状）= 推导模式**: 菜单 = 官方四档位 + 其余
+  路由模型。额外槽位的 UI 编辑器已按需求移除（2026-11-01 晚）; JSON 手编
+  claudeAppDesktop.models 仍生效（声明非空时菜单 = 档位 + 恰好这些声明条目）。
+- **档位如实显示**: 多个档位选同一个模型时, 每个档位槽位都独立出现在菜单
+  （不再按目标折叠）; 空 tier 字段跳过。请求侧每个档位 id 各自解析到自己的
+  tier 字段。
 - 迁移提醒: profile tier 字段需与原 script 映射核对一致（如 sonnet: script 是
   glm-5.3-flash+额度回退, profile 是 deepseek——删 script 后以 profile 为准）。
   script 未删时其映射仍生效。
 - 允许列表: tier 槽位 id 会解析到 tier 目标（model-allowlist 播种）, Desktop 菜单可见性不受影响。
-- 四档选择器/额外槽位的模型下拉会按该 profile 的允许模型列表过滤（列表为空 = 不限）。
+- 四档选择器的模型下拉会按该 profile 的允许模型列表过滤（列表为空 = 不限）。
 - provider 自动刷新（autoFetchModels）现在会**对齐上游**: 基线里存在、上游 /models
   已不再列出的模型从 provider.models 移除（removedModels）; 手动添加的（不在基线）
   永不裁剪; 被裁剪的模型同时移出基线, 上游重新列出时会作为新增回归。

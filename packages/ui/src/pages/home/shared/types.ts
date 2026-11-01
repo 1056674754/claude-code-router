@@ -34,7 +34,6 @@ import type {
   RouterRuleOperator,
   RouterRuleRewriteOperation,
   RouterRuleType,
-  ClaudeAppDesktopModelSlot,
   TrayComponentVariants,
   TrayWindowModuleId,
   VirtualModelBaseModelMode,
@@ -191,7 +190,6 @@ export type AddProfileDraft = {
   botPlatform: string;
   claudeSettingsText: string;
   configFile: string;
-  desktopSlots: ClaudeAppDesktopModelSlot[];
   envRows: KeyValueDraftRow[];
   fableModel: string;
   haikuModel: string;
