@@ -42,10 +42,13 @@ export function createDefaultAppConfig(options: DefaultAppConfigOptions = {}): A
         }
       },
       fallback: {
+        // Hold-through-429 stays on by default (rateLimitWaitMs); retryCount
+        // stays 0 so the default config remains single-runtime capable —
+        // routerFallbackRequiresWrapper only blocks on retryCount > 0.
         mode: "retry",
         models: [],
         rateLimitWaitMs: 120_000,
-        retryCount: 2
+        retryCount: 0
       },
       rules: []
     },

@@ -32,7 +32,7 @@ import { recordProviderCredentialOutcome } from "@ccr/core/providers/credential-
 import { codexApplyPatchBridgeResponseStream, prepareCodexApplyPatchBridgeRequest } from "@ccr/core/gateway/features/codex-patch-bridge";
 import { codexMultiAgentBridgeResponseStream, prepareCodexMultiAgentBridgeRequest } from "@ccr/core/gateway/features/codex-multi-agent-bridge";
 import { rewriteAnthropicMessageStartModelStream, shouldRewriteAnthropicMessageStartModel } from "@ccr/core/gateway/features/anthropic-response-model";
-import { contextOverflowErrorResponseStream, shouldRewriteContextOverflowErrorResponse } from "@ccr/core/gateway/features/context-overflow-error";
+import { contextOverflowErrorResponseStream, rewriteContextOverflowErrorBody, shouldRewriteContextOverflowErrorResponse } from "@ccr/core/gateway/features/context-overflow-error";
 import { prepareCursorOpenAICompatChatBody } from "@ccr/core/gateway/features/cursor-compat";
 import { filteredResponseHeaders, formatError, formatUpstreamErrorForLog, forwardHeaders, inferGatewayClient, readRequestBody, sendJson, shouldCaptureGatewayUsage, shouldSendBody, stripLocalGatewayAuthHeaders } from "@ccr/core/gateway/http/io";
 import { appendAggregateErrorAttemptSummary, shouldBufferAggregateErrorBody } from "@ccr/core/gateway/http/error-detail";
@@ -943,7 +943,11 @@ export class GatewayRequestPipeline {
         contentType: responseHeaders.get("content-type") ?? undefined,
         status: upstreamResponse.status
       });
-      if (codexApplyPatchBridgeActive || codexMultiAgentBridgeActive || appendContextArchiveFooter || transformCodexCompactResponse || rewriteAnthropicResponseModel || rewritesContextOverflowError) {
+      // The overflow rewrite is deliberately broad (any 4xx JSON), but it must
+      // not strip content-length before the aggregate-error buffer below: that
+      // buffer owns the response for bounded JSON errors and ends it
+      // synchronously, applying the overflow rewrite to the buffered text.
+      if (codexApplyPatchBridgeActive || codexMultiAgentBridgeActive || appendContextArchiveFooter || transformCodexCompactResponse || rewriteAnthropicResponseModel) {
         responseHeaders.delete("content-length");
       }
       recordProviderCredentialOutcome(this.config, method, upstreamResult.attempt, upstreamResponse.status, responseHeaders);
@@ -985,14 +989,17 @@ export class GatewayRequestPipeline {
           return;
         }
         const outboundErrorText = appendAggregateErrorAttemptSummary(bufferedErrorText, upstreamResult.failedAttempts) ?? bufferedErrorText;
-        if (outboundErrorText !== bufferedErrorText) {
+        const overflowRewrittenText = rewritesContextOverflowError
+          ? rewriteContextOverflowErrorBody(outboundErrorText, responseProtocol) ?? outboundErrorText
+          : outboundErrorText;
+        if (overflowRewrittenText !== bufferedErrorText) {
           responseHeaders.delete("content-length");
         }
         response.writeHead(upstreamResponse.status, Object.fromEntries(filteredResponseHeaders(responseHeaders)));
         finalizeOpenRouterDiscountSelection(false);
         if (shouldCaptureUsage) {
           recordUsage({
-            bodyText: outboundErrorText,
+            bodyText: overflowRewrittenText,
             client,
             durationMs: Date.now() - startedAt,
             fallbackModel: routedModel,
@@ -1005,8 +1012,8 @@ export class GatewayRequestPipeline {
             statusCode: upstreamResponse.status
           });
         }
-        writeRequestLog(upstreamResponse.status, responseHeaders, outboundErrorText);
-        response.end(outboundErrorText);
+        writeRequestLog(upstreamResponse.status, responseHeaders, overflowRewrittenText);
+        response.end(overflowRewrittenText);
         return;
       }
       response.writeHead(upstreamResponse.status, Object.fromEntries(filteredResponseHeaders(responseHeaders)));
@@ -1185,9 +1192,17 @@ export class GatewayRequestPipeline {
         // and retry, instead of hanging on a socket that will never finish.
         // (.pipe() does not end the client response when a stage errors, so an
         // upstream reset would otherwise leave the client waiting forever.)
+        // Destroy rather than end: the chunked terminator end() writes would
+        // make the truncated stream look complete. The terminal error frame is
+        // written synchronously above; give it a tick to reach the socket, then
+        // close hard.
         sseTailGuard?.writeTerminalError();
         if (!clientDisconnected && !response.destroyed && !response.writableEnded) {
-          response.end();
+          setImmediate(() => {
+            if (!response.destroyed && !response.writableEnded) {
+              response.destroy();
+            }
+          });
         }
       };
       for (const stream of responseStreams) {
