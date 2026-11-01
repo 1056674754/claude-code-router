@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ClaudeAppDesktopModelsSection } from "@ccr/ui/pages/home/components/claude-app-desktop.tsx";
+import { ClaudeAppDesktopModelsCard } from "@ccr/ui/pages/home/components/claude-app-desktop.tsx";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
 
-test("ClaudeAppDesktopModelsSection collapsed shows the full-menu hint and no rows", () => {
+test("ClaudeAppDesktopModelsCard collapsed shows the full-menu hint and no rows", () => {
   const html = renderToStaticMarkup(
-    <ClaudeAppDesktopModelsSection models={undefined} onChange={() => undefined} />
+    <ClaudeAppDesktopModelsCard models={undefined} onChange={() => undefined} />
   );
 
   assert.match(html, /Claude Desktop model slots/);
@@ -15,9 +15,9 @@ test("ClaudeAppDesktopModelsSection collapsed shows the full-menu hint and no ro
   assert.doesNotMatch(html, /Slot name/);
 });
 
-test("ClaudeAppDesktopModelsSection renders declared slots with label and 1M controls", () => {
+test("ClaudeAppDesktopModelsCard renders declared slots with label and 1M controls", () => {
   const html = renderToStaticMarkup(
-    <ClaudeAppDesktopModelsSection
+    <ClaudeAppDesktopModelsCard
       models={[
         "claude-fable-5",
         { label: "DeepSeek V4.1", name: "deepseek-v4.1-flash" }
@@ -39,10 +39,10 @@ test("ClaudeAppDesktopModelsSection renders declared slots with label and 1M con
   assert.match(html, /Add slot/);
 });
 
-test("ClaudeAppDesktopModelsSection renders the Chinese copy", () => {
+test("ClaudeAppDesktopModelsCard renders the Chinese copy", () => {
   const html = renderToStaticMarkup(
     <AppI18nContext.Provider value={appCopy.zh}>
-      <ClaudeAppDesktopModelsSection
+      <ClaudeAppDesktopModelsCard
         models={[{ name: "claude-sonnet-5", supports1m: true }]}
         onChange={() => undefined}
       />

@@ -15,7 +15,7 @@ import {
 import claudeCodeConfigOptionsJson from "@/generated/claude-code-config-options.json";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip } from "@/components/ui/tooltip";
-import { ClaudeAppDesktopModelsSection, type ClaudeAppDesktopModels } from "./claude-app-desktop";
+import { ClaudeAppDesktopModelsCard, type ClaudeAppDesktopModels } from "./claude-app-desktop";
 import { ModelMultiSelector, ModelSelector } from "./model-selector";
 import { AddRoutingRuleDialog } from "./routing";
 
@@ -90,11 +90,11 @@ export function ProfileView({
   return (
     <motion.div
       animate={{ opacity: 1 }}
-      className="flex h-full min-h-0 min-w-0 flex-col"
+      className="flex h-full min-h-0 min-w-0 flex-col gap-3"
       initial={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
     >
-      <Card className="flex h-full min-h-0 min-w-0 flex-col">
+      <Card className="flex min-h-0 min-w-0 flex-1 flex-col">
         <CardHeader>
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
@@ -295,13 +295,13 @@ export function ProfileView({
               {t(applyError)}
             </div>
           ) : null}
-
-          <ClaudeAppDesktopModelsSection
-            models={config.claudeAppDesktop?.models}
-            onChange={updateClaudeAppDesktopModels}
-          />
         </CardContent>
       </Card>
+
+      <ClaudeAppDesktopModelsCard
+        models={config.claudeAppDesktop?.models}
+        onChange={updateClaudeAppDesktopModels}
+      />
     </motion.div>
   );
 }
