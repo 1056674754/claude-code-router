@@ -186,7 +186,8 @@ test("Claude App gateway apply writes only the declared claudeAppDesktop slots",
     claudeAppDesktop: {
       models: [
         "claude-fable-5",
-        { label: "GLM 5.3", name: "Zhipu/glm-5.3" }
+        { label: "GLM 5.3", name: "Zhipu/glm-5.3" },
+        { label: "Spare 1M", name: "Zhipu/spare-model", supports1m: true }
       ]
     }
   });
@@ -195,10 +196,16 @@ test("Claude App gateway apply writes only the declared claudeAppDesktop slots",
     const { result } = applyClaudeAppGatewayConfig(config, { backup: false, dataDir });
     const profile = readJson(result.configLibraryFile);
     const routes = buildClaudeAppGatewayModelRoutes(config);
-    const route = routes.find((item) => item.targetModel.toLowerCase().endsWith("glm-5.3"));
+    const glmRoute = routes.find((item) => item.targetModel.toLowerCase() === "zhipu/glm-5.3");
+    const spareRoute = routes.find((item) => item.targetModel.toLowerCase() === "zhipu/spare-model");
+    assert.ok(glmRoute);
+    assert.ok(spareRoute);
 
-    assert.deepEqual(profile.inferenceModels.map((item) => item.name), ["claude-fable-5", route.id]);
-    assert.deepEqual(profile.inferenceModels.map((item) => item.labelOverride), ["claude-fable-5", "GLM 5.3"]);
+    assert.deepEqual(profile.inferenceModels.map((item) => item.name), ["claude-fable-5", glmRoute.id, spareRoute.id]);
+    assert.deepEqual(profile.inferenceModels.map((item) => item.labelOverride), ["claude-fable-5", "GLM 5.3", "Spare 1M"]);
+    // glm-5.3 supports 1M via its catalog entry; spare-model via the declared slot.
+    assert.deepEqual(profile.inferenceModels.map((item) => item.supports1m ?? false), [false, true, true]);
+    assert.deepEqual(profile.inferenceModels.map((item) => item.prefer1m ?? false), [false, true, true]);
   } finally {
     rmSync(dataDir, { force: true, recursive: true });
     rmSync(activeDataDir, { force: true, recursive: true });

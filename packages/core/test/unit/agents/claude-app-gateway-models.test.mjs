@@ -5,6 +5,7 @@ import {
   buildClaudeAppGatewayInferenceModels,
   buildClaudeAppGatewayModelRoutes,
   inferClaudeAppGatewayTargetModel,
+  isClaudeAppDesktopSafeModelId,
   resolveClaudeAppGatewayRouteModel
 } from "@ccr/core/agents/claude-app/gateway-routes.ts";
 import {
@@ -809,6 +810,51 @@ test("claudeAppDesktop without declared models keeps the full menu", () => {
     buildClaudeAppDesktopInferenceModels(config),
     buildClaudeAppGatewayInferenceModels(base)
   );
+});
+
+test("claudeAppDesktop slots emit prefer1m alongside supports1m and omit it otherwise", () => {
+  const base = createConfig({
+    providers: [{ models: ["glm-5.3"], name: "Zhipu" }]
+  });
+  const models = buildClaudeAppDesktopInferenceModels({
+    ...base,
+    claudeAppDesktop: {
+      models: [
+        "claude-fable-5",
+        { label: "GLM 5.3", name: "Zhipu/glm-5.3" },
+        { label: "GLM 5.3 1M", name: "Zhipu/glm-5.3[1m]", supports1m: true }
+      ]
+    }
+  });
+  // glm-5.3's catalog entry already declares 1M support, so its route publishes
+  // supports1m and the [1m] selector dedupes onto the same slot.
+  const route = buildClaudeAppGatewayModelRoutes(base).find((item) => item.targetModel === "Zhipu/glm-5.3");
+  assert.ok(route);
+  assert.deepEqual(models.map((item) => item.name), ["claude-fable-5", route.id]);
+  assert.deepEqual(models.map((item) => item.supports1m ?? false), [false, true]);
+  assert.deepEqual(models.map((item) => item.prefer1m ?? false), [false, true]);
+});
+
+test("isClaudeAppDesktopSafeModelId accepts native and anthropic ids and rejects foreign shapes", () => {
+  // Native claude-* role names (Desktop 1.12603.1+ whitelist: sonnet/opus/haiku/fable).
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-sonnet-5"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-opus-4-6"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-haiku-4-5"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-fable-5"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-sonnet-4-5-20250929"), true);
+  // anthropic/claude-* prefix, including CCR's encoded gateway route ids.
+  assert.equal(isClaudeAppDesktopSafeModelId("anthropic/claude-sonnet-5"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("anthropic/claude-ccr-h646565707365656b2d63686174"), true);
+  assert.equal(isClaudeAppDesktopSafeModelId("anthropic/claude-ccr2-h646565707365656b2d63686174"), true);
+  // The [1m] suffix must not flip the verdict.
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-sonnet-5[1m]"), true);
+  // Everything else risks Desktop's fail-all validator.
+  assert.equal(isClaudeAppDesktopSafeModelId("deepseek-v4.1-flash"), false);
+  assert.equal(isClaudeAppDesktopSafeModelId("glm-5.3"), false);
+  assert.equal(isClaudeAppDesktopSafeModelId("openai/gpt-5"), false);
+  assert.equal(isClaudeAppDesktopSafeModelId("claude-unknownrole-9"), false);
+  assert.equal(isClaudeAppDesktopSafeModelId(""), false);
+  assert.equal(isClaudeAppDesktopSafeModelId("   "), false);
 });
 
 test("provider modelDisplayNames override the catalog label without the provider prefix", () => {

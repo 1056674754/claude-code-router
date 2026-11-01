@@ -15,6 +15,7 @@ import {
 import claudeCodeConfigOptionsJson from "@/generated/claude-code-config-options.json";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip } from "@/components/ui/tooltip";
+import { ClaudeAppDesktopModelsSection, type ClaudeAppDesktopModels } from "./claude-app-desktop";
 import { ModelMultiSelector, ModelSelector } from "./model-selector";
 import { AddRoutingRuleDialog } from "./routing";
 
@@ -62,6 +63,7 @@ export function ProfileView({
   profileRuntimeStatus,
   removeProfile,
   stopProfileApp,
+  updateClaudeAppDesktopModels,
   updateProfileItem
 }: {
   addProfile: (agent?: ProfileConfig["agent"]) => void;
@@ -75,6 +77,7 @@ export function ProfileView({
   profileRuntimeStatus: ProfileRuntimeStatus;
   removeProfile: (index: number) => void;
   stopProfileApp: (index: number) => void;
+  updateClaudeAppDesktopModels: (models: ClaudeAppDesktopModels | undefined) => void;
   updateProfileItem: (index: number, patch: Partial<ProfileConfig>) => void;
 }) {
   const t = useAppText();
@@ -292,6 +295,11 @@ export function ProfileView({
               {t(applyError)}
             </div>
           ) : null}
+
+          <ClaudeAppDesktopModelsSection
+            models={config.claudeAppDesktop?.models}
+            onChange={updateClaudeAppDesktopModels}
+          />
         </CardContent>
       </Card>
     </motion.div>

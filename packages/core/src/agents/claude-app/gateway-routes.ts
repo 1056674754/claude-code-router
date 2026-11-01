@@ -27,6 +27,7 @@ export type ClaudeAppGatewayInferenceModel = {
   labelOverride: string;
   name: string;
   supports1m?: true;
+  prefer1m?: true;
 };
 
 export function inferClaudeAppGatewayTargetModel(
@@ -119,7 +120,7 @@ export function buildClaudeAppGatewayInferenceModels(
   return routes.map((route) => ({
     labelOverride: route.displayName,
     name: route.id,
-    ...(route.oneMillionContext ? { supports1m: true as const } : {})
+    ...(route.oneMillionContext ? { supports1m: true as const, prefer1m: true as const } : {})
   }));
 }
 
@@ -142,14 +143,16 @@ export function buildClaudeAppDesktopInferenceModels(
       ? {
           labelOverride: label || route.displayName,
           name: route.id,
-          ...(route.oneMillionContext || entry.supports1m === true ? { supports1m: true as const } : {})
+          ...(route.oneMillionContext || entry.supports1m === true
+            ? { supports1m: true as const, prefer1m: true as const }
+            : {})
         }
       : {
           // Unknown selectors pass through as bare menu slots; the gateway's
           // Router rules decide where they route at request time.
           labelOverride: label || entry.name.trim(),
           name: entry.name.trim(),
-          ...(entry.supports1m === true ? { supports1m: true as const } : {})
+          ...(entry.supports1m === true ? { supports1m: true as const, prefer1m: true as const } : {})
         };
     const key = model.name.toLowerCase();
     if (seen.has(key)) {
@@ -165,7 +168,7 @@ function claudeAppGatewayRouteToInferenceModel(route: ClaudeAppGatewayModelRoute
   return {
     labelOverride: route.displayName,
     name: route.id,
-    ...(route.oneMillionContext ? { supports1m: true as const } : {})
+    ...(route.oneMillionContext ? { supports1m: true as const, prefer1m: true as const } : {})
   };
 }
 
@@ -391,6 +394,30 @@ export function decodeClaudeAppGatewayRouteId(routeId: string): string | undefin
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether a bare inference-model name is expected to survive Claude Desktop's
+ * menu validator. Desktop 1.12603.1+ rejects unknown shapes and can fail the
+ * whole inferenceModels group, so only native claude-* role names and
+ * anthropic/claude-* ids (encoded gateway route ids included) are considered
+ * safe. Exported for the UI, which warns about unsafe declared slots without
+ * blocking them.
+ */
+export function isClaudeAppDesktopSafeModelId(model: string): boolean {
+  const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model.trim());
+  if (!normalized) {
+    return false;
+  }
+  const lower = normalized.toLowerCase();
+  if (!lower.includes("/") && claudeAppGatewayNativeModelNameIsSafe(lower)) {
+    return true;
+  }
+  if (lower.startsWith("anthropic/claude-")) {
+    const bare = lower.slice("anthropic/".length);
+    return claudeAppGatewayNativeModelNameIsSafe(bare) || /^claude-ccr(?:\d+)?-h[0-9a-f]+$/.test(bare);
+  }
+  return false;
 }
 
 function claimClaudeAppGatewayRouteId(
