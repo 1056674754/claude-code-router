@@ -1,5 +1,5 @@
 import type { ApiKeyConfig, AppConfig, ProfileConfig } from "@ccr/core/contracts/app";
-import { resolveClaudeAppGatewayRouteModel } from "@ccr/core/agents/claude-app/gateway-routes";
+import { resolveClaudeAppGatewayRouteModel, resolveClaudeAppTierSlotModel } from "@ccr/core/agents/claude-app/gateway-routes";
 import { profileApiKeyId } from "@ccr/core/profiles/api-key";
 import { modelRegistryForConfig, normalizeRouteSelector } from "@ccr/core/routing/model-registry";
 
@@ -130,11 +130,15 @@ function resolveClaudeAppRouteTarget(
   if (!config?.profile) {
     return undefined;
   }
-  return resolveClaudeAppGatewayRouteModel(model, {
+  const resolutionConfig = {
     Providers: config.Providers,
     profile: config.profile,
     virtualModelProfiles: config.virtualModelProfiles
-  });
+  };
+  // Tier slot ids (claude-fable-5/…) resolve to the profile's tier models so
+  // allowlists expressed as targets keep the derived Desktop menu visible.
+  return resolveClaudeAppTierSlotModel(model, resolutionConfig) ??
+    resolveClaudeAppGatewayRouteModel(model, resolutionConfig);
 }
 
 function modelKeySeeds(

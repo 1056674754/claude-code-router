@@ -1,4 +1,4 @@
-import type { AppConfig, ClaudeAppDesktopModelSlot } from "@ccr/core/contracts/app";
+import type { AppConfig, ClaudeAppDesktopModelSlot, ProfileConfig } from "@ccr/core/contracts/app";
 import { availableGatewayModelIds, effectiveContextWindowPercentFor, normalizeProfileScopeValue } from "@ccr/core/contracts/app";
 import { findModelCatalogEntry, findProviderModelCatalogEntry, type ModelCatalogEntry } from "@ccr/core/gateway/model-catalog";
 import { modelRegistryForConfig } from "@ccr/core/routing/model-registry";
@@ -128,11 +128,11 @@ export function buildClaudeAppDesktopInferenceModels(
   config: Pick<AppConfig, "Providers" | "profile" | "virtualModelProfiles" | "claudeAppDesktop">,
   options: ClaudeAppGatewayModelRouteOptions = {}
 ): ClaudeAppGatewayInferenceModel[] {
-  const routes = buildClaudeAppGatewayModelRoutes(config, options);
   const declared = config.claudeAppDesktop?.models ?? [];
   if (declared.length === 0) {
-    return routes.map(claudeAppGatewayRouteToInferenceModel);
+    return composeDerivedClaudeAppDesktopMenu(config, options);
   }
+  const routes = buildClaudeAppGatewayModelRoutes(config, options);
   const models: ClaudeAppGatewayInferenceModel[] = [];
   const seen = new Set<string>();
   for (const slot of declared) {
@@ -161,7 +161,25 @@ export function buildClaudeAppDesktopInferenceModels(
     seen.add(key);
     models.push(model);
   }
-  return models.length > 0 ? models : routes.map(claudeAppGatewayRouteToInferenceModel);
+  return models.length > 0 ? models : composeDerivedClaudeAppDesktopMenu(config, options);
+}
+
+// The derived Desktop menu: tier slots from the active global claude-code
+// profile first, then every other routed model — minus models a tier slot
+// already covers, so a real model never shows twice. An explicit
+// claudeAppDesktop.models declaration replaces this composition entirely.
+function composeDerivedClaudeAppDesktopMenu(
+  config: Pick<AppConfig, "Providers" | "profile" | "virtualModelProfiles">,
+  options: ClaudeAppGatewayModelRouteOptions
+): ClaudeAppGatewayInferenceModel[] {
+  const tierRoutes = buildClaudeAppTierSlotRoutes(config, options);
+  const tierTargets = new Set(tierRoutes.map((route) =>
+    stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase()
+  ));
+  const baseRoutes = buildClaudeAppGatewayModelRoutes(config, options).filter((route) =>
+    !tierTargets.has(stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase())
+  );
+  return [...tierRoutes, ...baseRoutes].map(claudeAppGatewayRouteToInferenceModel);
 }
 
 function claudeAppGatewayRouteToInferenceModel(route: ClaudeAppGatewayModelRoute): ClaudeAppGatewayInferenceModel {
@@ -202,6 +220,88 @@ function inferGlobalClaudeProfileModel(config: Pick<AppConfig, "profile">): stri
     normalizeProfileScopeValue(profile.scope) === "global" &&
     profile.model.trim()
   )?.model.trim() ?? "";
+}
+
+export type ClaudeAppTierSlotDefinition = {
+  field: "fableModel" | "haikuModel" | "opusModel" | "sonnetModel";
+  slotId: string;
+  tier: string;
+};
+
+// Tier menu slots derived from the active global claude-code profile's model
+// selection, in the CLI's tier order (fable → opus → sonnet → haiku). Empty
+// tier fields are skipped — a tier slot exists only when the profile names a
+// real model for it, so the menu never pads to a multiple of four.
+export const CLAUDE_APP_TIER_SLOTS: ClaudeAppTierSlotDefinition[] = [
+  { field: "fableModel", slotId: "claude-fable-5", tier: "fable" },
+  { field: "opusModel", slotId: "claude-opus-5", tier: "opus" },
+  { field: "sonnetModel", slotId: "claude-sonnet-5", tier: "sonnet" },
+  { field: "haikuModel", slotId: "claude-haiku-4-5", tier: "haiku" }
+];
+
+function activeGlobalClaudeCodeProfile(
+  config: Pick<AppConfig, "profile">
+): ProfileConfig | undefined {
+  return config.profile.profiles.find((profile) =>
+    profile.enabled &&
+    profile.agent === "claude-code" &&
+    normalizeProfileScopeValue(profile.scope) === "global"
+  );
+}
+
+export function buildClaudeAppTierSlotRoutes(
+  config: Pick<AppConfig, "Providers" | "profile" | "virtualModelProfiles">,
+  options: ClaudeAppGatewayModelRouteOptions = {}
+): ClaudeAppGatewayModelRoute[] {
+  const profile = activeGlobalClaudeCodeProfile(config);
+  if (!profile) {
+    return [];
+  }
+  const tierEntries = CLAUDE_APP_TIER_SLOTS.flatMap((slot) => {
+    const target = (profile[slot.field] ?? "").trim();
+    if (!target) {
+      return [];
+    }
+    return [{ slot, target: canonicalClaudeAppGatewayTargetModel(target, config) ?? target }];
+  });
+  // One real model appears once in the menu: a later tier whose target an
+  // earlier tier already covers is skipped (request resolution still maps
+  // its slot id to the same target).
+  const seenTargets = new Set<string>();
+  const routes: ClaudeAppGatewayModelRoute[] = [];
+  for (const { slot, target } of tierEntries) {
+    const targetKey = stripClaudeAppGatewayOneMillionContextSuffix(target).toLowerCase();
+    if (seenTargets.has(targetKey)) {
+      continue;
+    }
+    seenTargets.add(targetKey);
+    routes.push({
+      displayName: claudeAppGatewayDisplayNames([target], config, options)[0],
+      id: slot.slotId,
+      oneMillionContext: claudeAppGatewaySupportsOneMillionContext(target, config, options),
+      targetModel: target
+    });
+  }
+  return routes;
+}
+
+export function resolveClaudeAppTierSlotModel(
+  model: string,
+  config: Pick<AppConfig, "profile">
+): string | undefined {
+  const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model.trim()).toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  const slot = CLAUDE_APP_TIER_SLOTS.find((entry) => entry.slotId.toLowerCase() === normalized);
+  if (!slot) {
+    return undefined;
+  }
+  const profile = activeGlobalClaudeCodeProfile(config);
+  if (!profile) {
+    return undefined;
+  }
+  return (profile[slot.field] ?? "").trim() || undefined;
 }
 
 function claudeAppGatewayTargetModels(

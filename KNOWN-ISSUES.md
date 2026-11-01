@@ -49,6 +49,21 @@ x-api-key）, 已加 provider `CtyunA`（type anthropic_messages）让 deepseek/
   注意: 一个 script reroute 会终结规则链, 多个 script 规则不会串联。
 - 另有退避补丁: bin/ccr-cli.js 内 429 重试退避基值 1s→5s（升级会丢）。
 
+## Desktop 档位槽位自动推导（2026-11-01, 方案三）
+Desktop 菜单现在从**激活的全局 claude-code profile 的 tier 字段**自动推导:
+fableModel/opusModel/sonnetModel/haikuModel → claude-fable-5/claude-opus-5/
+claude-sonnet-5/claude-haiku-4-5 槽位（fable→opus→sonnet→haiku 序; 字段为空跳过;
+同一目标模型的后续档位跳过——菜单里一个真实模型只出现一次; 其余路由模型跟在后面,
+已含 [1m] 变体逻辑与 prefer1m）。请求侧: tier 槽位 id 在**策略链中 Router.rules 之后**
+解析到对应 tier 字段——显式规则/script 永远优先, 推导只是兜底。
+规则:
+- **删除 claudeAppDesktop.models 声明即切换到推导模式**; 声明存在时完全接管菜单（高级覆盖,
+  仅 JSON 编辑, 页面无入口）。
+- 迁移提醒: profile tier 字段需与原 script 映射核对一致（如 sonnet: script 是
+  glm-5.3-flash+额度回退, profile 是 deepseek——删 script 后以 profile 为准）。
+  script 未删时其映射仍生效。
+- 允许列表: tier 槽位 id 会解析到 tier 目标（model-allowlist 播种）, Desktop 菜单可见性不受影响。
+
 ## 验证方式
 - 改 profile/模型后: `applyClaudeAppGateway` RPC → 跑 fix 脚本 → 检查
   profile 只剩 4 槽 + egress → curl :3456/v1/models 应只见 4 个裸 claude-* id。

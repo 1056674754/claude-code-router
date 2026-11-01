@@ -5,7 +5,7 @@ import path from "node:path";
 import { isGatewayProviderEnabled, type AppConfig, type ProfileClientKind, type ProfileConfig, type RequestRouteTraceChange, type RouterBuiltInAgentRuleId, type RouterFallbackConfig, type RouterRule, type RouterRuleCondition } from "@ccr/core/contracts/app";
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import { applyAgentRequestEnrichers } from "@ccr/core/agents/request-enricher";
-import { ANTHROPIC_CONTEXT_1M_BETA, buildClaudeAppGatewayModelRoutes, type ClaudeAppGatewayModelRoute, resolveClaudeAppGatewayRouteModel, stripClaudeAppGatewayOneMillionContextSuffix } from "@ccr/core/agents/claude-app/gateway-routes";
+import { ANTHROPIC_CONTEXT_1M_BETA, buildClaudeAppGatewayModelRoutes, type ClaudeAppGatewayModelRoute, resolveClaudeAppGatewayRouteModel, resolveClaudeAppTierSlotModel, stripClaudeAppGatewayOneMillionContextSuffix } from "@ccr/core/agents/claude-app/gateway-routes";
 import { claudeAppGatewayModelRouteOptions } from "@ccr/core/gateway/internal/shared";
 import { compileRouterConfig, type CompiledProfileRoutingConfig, type CompiledRouterConfig, type CompiledRouterRule } from "@ccr/core/routing/config-compiler";
 import type { RouteDecision, RouteDiagnostic, RouteModelRef, RouteRequest, RouteSource } from "@ccr/core/routing/contracts";
@@ -406,6 +406,31 @@ async function resolveConfiguredRouteDecision(
       },
       id: `rule:${rule.rule.id}`
     })),
+    {
+      // Claude Desktop tier slots (claude-fable-5/…) derive from the active
+      // global claude-code profile's tier fields. Explicit routing rules and
+      // scripts above keep precedence; this only fills in when nothing
+      // earlier claimed the request.
+      evaluate: () => {
+        const tierTarget = explicitModel
+          ? resolveClaudeAppTierSlotModel(explicitModel, config)
+          : undefined;
+        const resolvedTierModel = tierTarget
+          ? compiled.modelRegistry.resolve(tierTarget)
+          : undefined;
+        if (!resolvedTierModel) {
+          return undefined;
+        }
+        return {
+          fallback: defaultFallback,
+          model: resolvedTierModel,
+          reason: "claude-app-tier-slot",
+          rewrites: [],
+          source: "builtin"
+        };
+      },
+      id: "claude-app-tier"
+    },
     {
       evaluate: () => subagentEnvDecision,
       id: "builtin-agent-claude-code-subagent-env"

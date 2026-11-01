@@ -4,9 +4,11 @@ import {
   buildClaudeAppDesktopInferenceModels,
   buildClaudeAppGatewayInferenceModels,
   buildClaudeAppGatewayModelRoutes,
+  buildClaudeAppTierSlotRoutes,
   inferClaudeAppGatewayTargetModel,
   isClaudeAppDesktopSafeModelId,
-  resolveClaudeAppGatewayRouteModel
+  resolveClaudeAppGatewayRouteModel,
+  resolveClaudeAppTierSlotModel
 } from "@ccr/core/agents/claude-app/gateway-routes.ts";
 import {
   createClaudeCliBootstrapResponse,
@@ -870,4 +872,92 @@ test("provider modelDisplayNames override the catalog label without the provider
   const route = buildClaudeAppGatewayModelRoutes(config).find((item) => item.targetModel === "Zhipu/glm-5.3");
   assert.ok(route);
   assert.equal(route.displayName, "GLM 5.3 Custom");
+});
+
+test("claude app tier slots derive from the active global claude-code profile", () => {
+  const config = {
+    Providers: [
+      { models: ["glm-5.3", "glm-5.3-flash"], name: "Zhipu" },
+      { models: ["deepseek-v4.1"], name: "Ctyun" }
+    ],
+    profile: {
+      enabled: true,
+      profiles: [{
+        agent: "claude-code",
+        enabled: true,
+        scope: "global",
+        id: "claude-code-global",
+        name: "Claude Code",
+        model: "Zhipu/glm-5.3-flash",
+        fableModel: "Zhipu/glm-5.3",
+        opusModel: "Zhipu/glm-5.3",
+        sonnetModel: "Ctyun/deepseek-v4.1",
+        haikuModel: ""
+      }]
+    },
+    virtualModelProfiles: []
+  };
+
+  const tierRoutes = buildClaudeAppTierSlotRoutes(config);
+  // Order is fable → opus → sonnet → haiku; opus collapses onto fable (same
+  // target) and the empty haiku field is skipped — no padding to four.
+  assert.deepEqual(tierRoutes.map((route) => route.id), ["claude-fable-5", "claude-sonnet-5"]);
+  assert.deepEqual(tierRoutes.map((route) => route.targetModel), ["Zhipu/glm-5.3", "Ctyun/deepseek-v4.1"]);
+
+  const menu = buildClaudeAppDesktopInferenceModels(config);
+  // Tier slots first, then the remaining routed models minus tier targets
+  // (glm-5.3 is covered by the fable slot, deepseek by sonnet).
+  assert.deepEqual(menu.map((item) => item.name), [
+    "claude-fable-5",
+    "claude-sonnet-5",
+    ...buildClaudeAppGatewayModelRoutes(config)
+      .filter((route) => route.targetModel === "Zhipu/glm-5.3-flash")
+      .map((route) => route.id)
+  ]);
+
+  // Request resolution maps tier ids back to the profile's tier models.
+  assert.equal(resolveClaudeAppTierSlotModel("claude-fable-5", config), "Zhipu/glm-5.3");
+  assert.equal(resolveClaudeAppTierSlotModel("Claude-Sonnet-5 ", config), "Ctyun/deepseek-v4.1");
+  assert.equal(resolveClaudeAppTierSlotModel("claude-opus-5", config), "Zhipu/glm-5.3");
+  assert.equal(resolveClaudeAppTierSlotModel("claude-haiku-4-5", config), undefined);
+  assert.equal(resolveClaudeAppTierSlotModel("claude-unknown-9", config), undefined);
+});
+
+test("claude app tier slots are skipped without an enabled global claude-code profile", () => {
+  const config = {
+    Providers: [{ models: ["glm-5.3"], name: "Zhipu" }],
+    profile: {
+      enabled: true,
+      profiles: [{
+        agent: "codex",
+        enabled: true,
+        scope: "global",
+        id: "codex-global",
+        name: "Codex",
+        model: "Zhipu/glm-5.3"
+      }]
+    },
+    virtualModelProfiles: []
+  };
+  assert.deepEqual(buildClaudeAppTierSlotRoutes(config), []);
+  assert.equal(resolveClaudeAppTierSlotModel("claude-fable-5", config), undefined);
+  // Menu falls back to the full routed list.
+  assert.deepEqual(
+    buildClaudeAppDesktopInferenceModels(config).map((item) => item.name),
+    buildClaudeAppGatewayInferenceModels(config).map((item) => item.name)
+  );
+});
+
+test("claude app tier slots keep the non-declared menu composition intact", () => {
+  // Without tier fields the derived menu equals the legacy full menu —
+  // existing installations see no change.
+  const base = {
+    Providers: [{ models: ["glm-5.3"], name: "Zhipu" }],
+    profile: { enabled: true, profiles: [] },
+    virtualModelProfiles: []
+  };
+  assert.deepEqual(
+    buildClaudeAppDesktopInferenceModels(base).map((item) => item.name),
+    buildClaudeAppGatewayInferenceModels(base).map((item) => item.name)
+  );
 });

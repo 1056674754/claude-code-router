@@ -15,7 +15,6 @@ import {
 import claudeCodeConfigOptionsJson from "@/generated/claude-code-config-options.json";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip } from "@/components/ui/tooltip";
-import { ClaudeAppDesktopModelsCard, type ClaudeAppDesktopModels } from "./claude-app-desktop";
 import { ModelMultiSelector, ModelSelector } from "./model-selector";
 import { AddRoutingRuleDialog } from "./routing";
 
@@ -63,7 +62,6 @@ export function ProfileView({
   profileRuntimeStatus,
   removeProfile,
   stopProfileApp,
-  updateClaudeAppDesktopModels,
   updateProfileItem
 }: {
   addProfile: (agent?: ProfileConfig["agent"]) => void;
@@ -77,7 +75,6 @@ export function ProfileView({
   profileRuntimeStatus: ProfileRuntimeStatus;
   removeProfile: (index: number) => void;
   stopProfileApp: (index: number) => void;
-  updateClaudeAppDesktopModels: (models: ClaudeAppDesktopModels | undefined) => void;
   updateProfileItem: (index: number, patch: Partial<ProfileConfig>) => void;
 }) {
   const t = useAppText();
@@ -90,11 +87,11 @@ export function ProfileView({
   return (
     <motion.div
       animate={{ opacity: 1 }}
-      className="flex h-full min-h-0 min-w-0 flex-col gap-3"
+      className="flex h-full min-h-0 min-w-0 flex-col"
       initial={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
     >
-      <Card className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <Card className="flex h-full min-h-0 min-w-0 flex-col">
         <CardHeader>
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
@@ -297,11 +294,6 @@ export function ProfileView({
           ) : null}
         </CardContent>
       </Card>
-
-      <ClaudeAppDesktopModelsCard
-        models={config.claudeAppDesktop?.models}
-        onChange={updateClaudeAppDesktopModels}
-      />
     </motion.div>
   );
 }

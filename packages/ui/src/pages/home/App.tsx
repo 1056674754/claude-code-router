@@ -3158,17 +3158,6 @@ function App() {
     });
   }
 
-  function updateClaudeAppDesktopModels(models: NonNullable<AppConfig["claudeAppDesktop"]>["models"]) {
-    updateConfig((next) => {
-      if (!models) {
-        const rest = { ...next };
-        delete rest.claudeAppDesktop;
-        return rest;
-      }
-      return { ...next, claudeAppDesktop: { models } };
-    });
-  }
-
   function removeProfile(index: number) {
     updateConfig((next) => ({
       ...next,
@@ -3344,7 +3333,6 @@ function App() {
                   profileRuntimeStatus,
                   removeProfile: setProfileDeleteIndex,
                   stopProfileApp: (index) => void stopProfileAppFromList(index),
-                  updateClaudeAppDesktopModels,
                   updateProfileItem
                 },
                 providers: {

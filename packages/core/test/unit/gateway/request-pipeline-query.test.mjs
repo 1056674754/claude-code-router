@@ -86,3 +86,97 @@ test("gateway pipeline preserves response retrieval query parameters and encoded
     globalThis.fetch = originalFetch;
   }
 });
+
+test("claude app tier slot requests resolve through the profile's tier model", async () => {
+  const config = createDefaultAppConfig();
+  config.observability.requestLogs = false;
+  config.contextArchive.enabled = false;
+  config.Providers = [{ name: "Primary", models: ["primary-model", "spare-model"], type: "openai_chat_completions", api_base_url: "http://127.0.0.1:9/v1" }];
+  config.profile.enabled = true;
+  config.profile.profiles = [{
+    agent: "claude-code",
+    enabled: true,
+    scope: "global",
+    id: "claude-code-global",
+    model: "Primary/primary-model",
+    name: "Claude Code",
+    fableModel: "Primary/spare-model",
+    haikuModel: "",
+    opusModel: "",
+    sonnetModel: ""
+  }];
+  const router = new ClaudeCodeRouterPlugin(config);
+  const pipeline = new GatewayRequestPipeline({
+    getBrowserWebSearchMcpIntegration: () => undefined, getConfig: () => config, getCoreAuthToken: () => "test", getPlugin: () => router,
+    getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
+  });
+  const previousFetch = globalThis.fetch;
+  const seenModels = [];
+  globalThis.fetch = async (_url, init) => {
+    if (new URL(String(_url)).pathname.startsWith("/__ccr/")) return new Response(null, { status: 404 });
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    seenModels.push(body.model);
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const request = Readable.from([Buffer.from(JSON.stringify({ model: "claude-fable-5", messages: [{ role: "user", content: "hi" }] }))]);
+    request.method = "POST";
+    request.url = "/v1/messages";
+    request.headers = { "content-type": "application/json" };
+    const response = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    response.writeHead = () => response;
+    await pipeline.proxyRequest(request, response, "/v1/messages");
+    assert.deepEqual(seenModels, ["spare-model"]);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test("explicit routing rules keep precedence over claude app tier slots", async () => {
+  const config = createDefaultAppConfig();
+  config.observability.requestLogs = false;
+  config.contextArchive.enabled = false;
+  config.Providers = [{ name: "Primary", models: ["primary-model", "spare-model"], type: "openai_chat_completions", api_base_url: "http://127.0.0.1:9/v1" }];
+  config.profile.enabled = true;
+  config.profile.profiles = [{
+    agent: "claude-code",
+    enabled: true,
+    scope: "global",
+    id: "claude-code-global",
+    model: "Primary/primary-model",
+    name: "Claude Code",
+    fableModel: "Primary/spare-model",
+    haikuModel: "",
+    opusModel: "",
+    sonnetModel: ""
+  }];
+  config.Router.rules = [{
+    condition: { left: "request.body.model", operator: "contains", right: "claude-fable-5" },
+    enabled: true,
+    id: "claim-fable",
+    name: "Claim fable",
+    rewrites: [{ key: "request.body.model", operation: "set", value: "Primary/primary-model" }],
+    type: "condition"
+  }];
+  const router = new ClaudeCodeRouterPlugin(config);
+  const pipeline = new GatewayRequestPipeline({
+    getBrowserWebSearchMcpIntegration: () => undefined, getConfig: () => config, getCoreAuthToken: () => "test", getPlugin: () => router,
+    getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
+  });
+  const previousFetch = globalThis.fetch;
+  const seenModels = [];
+  globalThis.fetch = async (_url, init) => {
+    if (new URL(String(_url)).pathname.startsWith("/__ccr/")) return new Response(null, { status: 404 });
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    seenModels.push(body.model);
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const request = Readable.from([Buffer.from(JSON.stringify({ model: "claude-fable-5", messages: [{ role: "user", content: "hi" }] }))]);
+    request.method = "POST";
+    request.url = "/v1/messages";
+    request.headers = { "content-type": "application/json" };
+    const response = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    response.writeHead = () => response;
+    await pipeline.proxyRequest(request, response, "/v1/messages");
+    assert.deepEqual(seenModels, ["primary-model"]);
+  } finally { globalThis.fetch = previousFetch; }
+});
