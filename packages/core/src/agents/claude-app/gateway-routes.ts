@@ -426,7 +426,11 @@ function claudeAppGatewayRouteId(
   configuredTargetKeys: Set<string>
 ): string | undefined {
   const targetModel = stripClaudeAppGatewayOneMillionContextSuffix(model);
-  const candidates = [claudeAppGatewayNativeRouteId(targetModel), claudeAppGatewayEncodedRouteId(targetModel)];
+  const candidates = [
+    claudeAppGatewayNativeRouteId(targetModel),
+    claudeAppGatewaySyntheticRouteId(targetModel),
+    claudeAppGatewayEncodedRouteId(targetModel)
+  ];
 
   for (const candidate of candidates) {
     const claimed = claimClaudeAppGatewayRouteId(candidate, usedRouteIds, configuredTargetKeys, targetModel);
@@ -484,6 +488,22 @@ function claudeAppGatewayEncodedRouteId(model: string, variant?: number): string
     ? `anthropic/claude-ccr${variant}-h`
     : CLAUDE_APP_ENCODED_ROUTE_PREFIX;
   return `${routePrefix}${encodeClaudeAppGatewayRouteModel(model)}`;
+}
+
+// Non-claude-shaped models (deepseek-v4.1-flash, glm-5.3, …) still need the
+// client's thinking/effort UI, which Claude Code gates on native claude-*
+// model families. Publish them under a deterministic sonnet-family alias —
+// the same trick as the old disguise-slot script — while display names keep
+// the real model identity and routing resolves the alias to the real target.
+// The slug covers the FULL selector (provider + model) so the alias is unique
+// per target and stable regardless of provider iteration order.
+function claudeAppGatewaySyntheticRouteId(model: string): string | undefined {
+  const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model);
+  const slug = normalized.trim().toLowerCase().replace(/[^a-z0-9.@:-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!slug) {
+    return undefined;
+  }
+  return `claude-sonnet-5-ccr-${slug}`;
 }
 
 function encodeClaudeAppGatewayRouteModel(model: string): string {

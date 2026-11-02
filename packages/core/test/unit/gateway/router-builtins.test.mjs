@@ -2129,7 +2129,7 @@ test("built-in Claude Code route publishes and accepts client-visible subagent m
   });
 
   const description = described.body.tools[0].description;
-  const routeMatch = /- (anthropic\/claude-ccr-h[0-9a-f]+) -> Provider\/gpt-5-codex: Use for long refactors/.exec(description);
+  const routeMatch = /- (\S+) -> Provider\/gpt-5-codex: Use for long refactors/.exec(description);
   assert.ok(routeMatch);
   const clientModel = routeMatch[1];
   assert.match(description, /client model -> CCR target/);
