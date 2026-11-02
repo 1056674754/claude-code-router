@@ -8,11 +8,14 @@ import { updatePersistedApiKeys } from "@ccr/core/config/config-repository";
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import {
   buildClaudeAppDesktopInferenceModels,
+  buildClaudeAppGatewayModelRoutes,
+  CLAUDE_APP_TIER_SLOTS,
   type ClaudeAppGatewayInferenceModel,
   type ClaudeAppGatewayModelRouteOptions
 } from "@ccr/core/agents/claude-app/gateway-routes";
-import { NO_AVAILABLE_GATEWAY_MODELS_MESSAGE, hasAvailableGatewayModels, type ApiKeyConfig, type AppConfig, type ClaudeAppGatewayApplyResult } from "@ccr/core/contracts/app";
+import { NO_AVAILABLE_GATEWAY_MODELS_MESSAGE, hasAvailableGatewayModels, normalizeProfileScopeValue, type ApiKeyConfig, type AppConfig, type ClaudeAppGatewayApplyResult } from "@ccr/core/contracts/app";
 import { findModelCatalogEntry } from "@ccr/core/gateway/model-catalog";
+import { isModelAllowedForProfile } from "@ccr/core/profiles/model-allowlist";
 
 const CLAUDE_APP_CONFIG_ID = "8f69f2f1-3275-4ad8-9317-4aa7e972f311";
 const CLAUDE_APP_CONFIG_NAME = "Claude Code Router";
@@ -140,6 +143,39 @@ function skippedClaudeAppGatewayResult(
   };
 }
 
+// The Desktop menu must honor the profile's allowed-model list the same way
+// /v1/models does: unchecked provider models disappear from the picker. Tier
+// slots stay exempt — their tier fields and the allowlist live in the same
+// profile dialog, and filtering one by the other is circular.
+function filterClaudeAppDesktopMenuByAllowlist(config: AppConfig, models: ClaudeAppGatewayInferenceModel[]): ClaudeAppGatewayInferenceModel[] {
+  const allowlistConfig = {
+    Providers: config.Providers,
+    profile: config.profile,
+    virtualModelProfiles: config.virtualModelProfiles
+  };
+  const profile = config.profile.profiles.find((item) =>
+    item.enabled && item.agent === "claude-code" && normalizeProfileScopeValue(item.scope) === "global"
+  );
+  if (!profile) {
+    return models;
+  }
+  const tierSlotIds = new Set(CLAUDE_APP_TIER_SLOTS.map((slot) => slot.slotId.toLowerCase()));
+  const targetById = new Map<string, string>();
+  for (const route of buildClaudeAppGatewayModelRoutes(config, claudeAppGatewayModelRouteOptions)) {
+    targetById.set(route.id.toLowerCase(), route.targetModel);
+  }
+  const allowed = models.filter((entry) => {
+    if (tierSlotIds.has(entry.name.toLowerCase())) {
+      return true;
+    }
+    const target = targetById.get(entry.name.toLowerCase());
+    return target === undefined ||
+      isModelAllowedForProfile(allowlistConfig, profile, target) ||
+      isModelAllowedForProfile(allowlistConfig, profile, entry.name);
+  });
+  return allowed.length > 0 ? allowed : models;
+}
+
 export function applyClaudeAppGatewayConfig(config: AppConfig, options: ClaudeAppGatewayApplyOptions = {}): { config: AppConfig; result: ClaudeAppGatewayApplyResult } {
   if (!hasAvailableGatewayModels(config)) {
     throw new Error(NO_AVAILABLE_GATEWAY_MODELS_MESSAGE);
@@ -149,10 +185,13 @@ export function applyClaudeAppGatewayConfig(config: AppConfig, options: ClaudeAp
   const paths = getClaudeAppGatewayPaths(options.dataDir);
   const activePaths = getClaudeAppActiveGatewayPaths(options.dataDir, paths);
   const endpoint = gatewayEndpoint(state.config);
-  const models = buildClaudeAppDesktopInferenceModels(state.config, {
-    ...claudeAppGatewayModelRouteOptions,
-    defaultTargetModel: options.defaultModel
-  });
+  const models = filterClaudeAppDesktopMenuByAllowlist(
+    state.config,
+    buildClaudeAppDesktopInferenceModels(state.config, {
+      ...claudeAppGatewayModelRouteOptions,
+      defaultTargetModel: options.defaultModel
+    })
+  );
   const model = models[0]?.name ?? "";
   const gatewayConfig: ClaudeAppGatewayConfig = {
     bootstrapEnabled: false,

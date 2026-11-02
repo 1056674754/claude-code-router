@@ -211,3 +211,41 @@ test("Claude App gateway apply writes only the declared claudeAppDesktop slots",
     rmSync(activeDataDir, { force: true, recursive: true });
   }
 });
+
+test("Claude App menu drops provider models excluded by the profile allowlist", () => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ccr-claude-app-gateway-allowlist-"));
+  const activeDataDir = `${dataDir}-3p`;
+  const config = createConfig({
+    Providers: [
+      { models: ["kept-model"], name: "Zhipu" },
+      { models: ["excluded-model"], name: "Ctyun" }
+    ],
+    profile: {
+      profiles: [{
+        agent: "claude-code",
+        enabled: true,
+        scope: "global",
+        id: "claude-code-global",
+        model: "Zhipu/kept-model",
+        name: "Claude Code",
+        availableModels: ["Zhipu/kept-model"]
+      }]
+    }
+  });
+
+  try {
+    const { result } = applyClaudeAppGatewayConfig(config, { backup: false, dataDir });
+    const profile = readJson(result.configLibraryFile);
+    const names = profile.inferenceModels.map((item) => item.name);
+    const labels = profile.inferenceModels.map((item) => item.labelOverride);
+    assert.ok(names.length > 0, "allowed models still publish");
+    assert.ok(labels.every((label) => !label.includes("excluded-model")), "excluded model must not appear in the menu");
+    assert.equal(
+      profile.inferenceModels.some((item) => (item.labelOverride ?? "").includes("kept-model")),
+      true
+    );
+  } finally {
+    rmSync(dataDir, { force: true, recursive: true });
+    rmSync(activeDataDir, { force: true, recursive: true });
+  }
+});
