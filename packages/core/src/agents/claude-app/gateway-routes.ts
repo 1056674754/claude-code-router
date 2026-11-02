@@ -188,8 +188,13 @@ function composeDerivedClaudeAppDesktopMenu(
   const tierTargets = new Set(tierRoutes.map((route) =>
     stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase()
   ));
+  const tierIds = new Set(tierRoutes.map((route) => route.id.toLowerCase()));
   const baseRoutes = buildClaudeAppGatewayModelRoutes(config, options).filter((route) =>
-    !tierTargets.has(stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase())
+    !tierTargets.has(stripClaudeAppGatewayOneMillionContextSuffix(route.targetModel).toLowerCase()) &&
+    // A base route can still CLAIM a tier's published id (Fusion/claude-opus-5
+    // claims claude-opus-5); two menu entries with one id get dropped by the
+    // client, so the tier slot wins and the base duplicate is skipped.
+    !tierIds.has(route.id.toLowerCase())
   );
   return [...tierRoutes, ...baseRoutes].map(claudeAppGatewayRouteToInferenceModel);
 }
@@ -497,13 +502,39 @@ function claudeAppGatewayEncodedRouteId(model: string, variant?: number): string
 // the real model identity and routing resolves the alias to the real target.
 // The slug covers the FULL selector (provider + model) so the alias is unique
 // per target and stable regardless of provider iteration order.
+//
+// Desktop additionally REJECTS gateway routes whose id contains a foreign
+// vendor token (deepseek, glm, gpt, qwen, codex, … — its validator fails
+// them with "Doesn't look like an Anthropic model" and drops the whole
+// menu), so vendor words are stripped from the slug before publication.
+const claudeAppForeignVendorTokens = [
+  "ark-code", "astron", "command-r", "deepseek", "doubao", "gemini", "gemma",
+  "glm", "gpt", "grok", "hermes", "hy3", "kimi", "lfm", "ling", "llama",
+  "longcat", "mimo", "minimax", "mistral", "mixtral", "moonshot", "nemotron",
+  "openai", "phi-", "qianfan", "qwen", "tc-code", "unic", "yi-", "stepfun",
+  "step-3", "seed-", "bytedance", "hunyuan", "granite", "amazon.nova",
+  "nova-", "devstral", "ministral", "ernie", "codex", "arcee", "trinity",
+  "abab", "k2.", "m2.", "jamba", "arctic", "solar", "mercury", "zamba",
+  "kat-coder", "dpsk"
+];
+
+function stripClaudeAppForeignVendorTokens(slug: string): string {
+  let sanitized = slug.toLowerCase();
+  for (const token of claudeAppForeignVendorTokens) {
+    while (sanitized.includes(token)) {
+      sanitized = sanitized.replace(token, "-");
+    }
+  }
+  return sanitized.replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+}
+
 function claudeAppGatewaySyntheticRouteId(model: string): string | undefined {
   const normalized = stripClaudeAppGatewayOneMillionContextSuffix(model);
-  const slug = normalized.trim().toLowerCase().replace(/[^a-z0-9.@:-]+/g, "-").replace(/^-+|-+$/g, "");
-  if (!slug) {
-    return undefined;
-  }
-  return `claude-sonnet-5-ccr-${slug}`;
+  const slug = stripClaudeAppForeignVendorTokens(
+    normalized.trim().toLowerCase().replace(/[^a-z0-9.@:-]+/g, "-").replace(/^-+|-+$/g, "")
+  );
+  const bare = slug || "model";
+  return `claude-sonnet-5-ccr-${bare}`;
 }
 
 function encodeClaudeAppGatewayRouteModel(model: string): string {
