@@ -226,6 +226,7 @@ import type {
   TrayWidgetVariant,
   TrayWindowModuleId,
   UsageComparisonRow,
+  UsageDailyActivityPoint,
   UsageSeriesPoint,
   UsageStatsFilter,
   UsageStatsRange,
@@ -575,6 +576,6 @@ export type {
   ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, CodexProfileConfigFormat, ProfileScope, ProfileSurface, ProxyCertificateInstallResult, ProxyCertificateStatus, ProxyNetworkBody,
   ProxyNetworkExchange, ProxyNetworkSnapshot, ProxyStatus, RequestLogBody, RequestLogBodyChunk, RequestLogEntry, RequestLogListFilter, RequestLogPage,
   RequestLogStatusFilter, RouterConfig, RouterFallbackConfig, RouterFallbackMode, RouterRule, RouterRuleType, TrayComponentVariants,
-  TrayBalanceProgressConfig, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow, UsageSeriesPoint, UsageStatsFilter, UsageStatsRange, UsageStatsSnapshot, UsageTotals,
+  TrayBalanceProgressConfig, TrayWidgetConfig, TrayWidgetType, TrayWidgetVariant, TrayWindowModuleId, UsageComparisonRow, UsageDailyActivityPoint, UsageSeriesPoint, UsageStatsFilter, UsageStatsRange, UsageStatsSnapshot, UsageTotals,
   VirtualModelBaseModelMode, VirtualModelExecutionMode, VirtualModelFusionCustomToolConfig, VirtualModelFusionVisionConfig, VirtualModelFusionWebSearchConfig, VirtualModelFusionWebSearchProvider, VirtualModelProfileConfig, VirtualModelToolVisibility, ProviderIdentitySafetyIssue, ProviderPreset, ProviderPresetEndpoint
 };

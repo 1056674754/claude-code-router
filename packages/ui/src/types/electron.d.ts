@@ -82,6 +82,7 @@ import type {
   RouteScriptValidationRequest,
   RouteScriptValidationResult,
   TrayUsageSnapshotPayload,
+  UsageDailyActivityPoint,
   UsageStatsFilter,
   UsageStatsRange,
   UsageStatsResetResult,
@@ -127,6 +128,7 @@ declare global {
       getRequestLogBodyChunk: (request: RequestLogBodyChunkRequest) => Promise<RequestLogBodyChunk | undefined>;
       getRequestLogs: (filter?: RequestLogListFilter) => Promise<RequestLogPage>;
       getUpdateStatus: () => Promise<AppUpdateStatus>;
+      getUsageDailyActivity: () => Promise<UsageDailyActivityPoint[]>;
       getUsageStats: (range?: UsageStatsRange, filter?: UsageStatsFilter) => Promise<UsageStatsSnapshot>;
       getTraySnapshot: (provider?: string) => Promise<TrayUsageSnapshotPayload>;
       installProxyCertificate: () => Promise<ProxyCertificateInstallResult>;

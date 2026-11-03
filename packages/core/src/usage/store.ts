@@ -20,6 +20,7 @@ import type {
   GatewayProviderProtocol,
   ProviderModelPricing,
   UsageComparisonRow,
+  UsageDailyActivityPoint,
   UsageStatsFilter,
   UsageSeriesPoint,
   UsageStatsRange,
@@ -509,6 +510,25 @@ export class UsageStore {
     return readUsageTotals(database, buildUsageWhereClause(since, filter, options));
   }
 
+  // Whole-history daily totals for the activity heatmap. Unlike getStats this
+  // has no range window: the heatmap shows every day the store still knows
+  // about and lets the view clip whatever does not fit.
+  async getDailyActivity(): Promise<UsageDailyActivityPoint[]> {
+    const database = await this.getDatabase();
+    // Rollups are rebuilt lazily from the event watermark; ask for them to be
+    // current before reading, exactly like getStats does.
+    this.ensureRollupsFresh(database);
+    const rows = queryRows(database, `
+      SELECT day_key, COALESCE(SUM(computed_total_tokens), 0) AS total_tokens
+      FROM usage_rollups
+      GROUP BY day_key
+      ORDER BY day_key
+    `);
+    return rows
+      .map((row) => ({ day: String(row.day_key ?? ""), totalTokens: normalizeCount(row.total_tokens) }))
+      .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.day));
+  }
+
   async resetStatistics(): Promise<UsageStatsResetResult> {
     const database = await this.getDatabase();
     const resetAt = new Date().toISOString();
@@ -843,6 +863,15 @@ export async function getUsageStats(range?: UsageStatsRange | null, filter?: Usa
   } catch (error) {
     console.warn(`[usage] Failed to read usage stats: ${formatError(error)}`);
     return emptySnapshot(normalizeUsageRange(range));
+  }
+}
+
+export async function getUsageDailyActivity(): Promise<UsageDailyActivityPoint[]> {
+  try {
+    return await usageStore.getDailyActivity();
+  } catch (error) {
+    console.warn(`[usage] Failed to read daily activity: ${formatError(error)}`);
+    return [];
   }
 }
 

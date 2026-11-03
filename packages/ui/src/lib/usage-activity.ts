@@ -11,11 +11,6 @@ export type TokenActivityCell = {
   weekIndex: number;
 };
 
-export type TokenActivityMonthLabel = {
-  label: string;
-  weekIndex: number;
-};
-
 export type TokenActivitySummary = {
   activeDays: number;
   avgPerDay: number;
@@ -24,12 +19,12 @@ export type TokenActivitySummary = {
   dayCount: number;
   longestStreak: number;
   maxTokens: number;
-  months: TokenActivityMonthLabel[];
   totalTokens: number;
   weekCount: number;
 };
 
 type TokenActivityOptions = {
+  anchor?: Date | string;
   maxWeeks?: number;
   minWeeks?: number;
   now?: Date | string;
@@ -38,7 +33,7 @@ type TokenActivityOptions = {
 
 const dayMs = 24 * 60 * 60 * 1000;
 
-export function buildTokenActivity(series: UsageSeriesPoint[], options: TokenActivityOptions = {}): TokenActivitySummary {
+export function buildTokenActivity(series: ReadonlyArray<Pick<UsageSeriesPoint, "bucket" | "totalTokens">>, options: TokenActivityOptions = {}): TokenActivitySummary {
   const totalsByDay = new Map<string, number>();
   let observedStart: Date | undefined;
   let observedEnd: Date | undefined;
@@ -58,9 +53,14 @@ export function buildTokenActivity(series: UsageSeriesPoint[], options: TokenAct
   const rangeWindow = activityRangeWindow(options.range, options.now);
   observedStart = rangeWindow?.start ?? observedStart ?? today;
   observedEnd = rangeWindow?.end ?? observedEnd ?? today;
+  // The grid can be anchored to "today" even when the newest record is older,
+  // so the calendar always ends on the current week and the latest day keeps
+  // its right-edge position.
+  const anchor = options.anchor ? startOfLocalDay(new Date(options.anchor)) : undefined;
+  const gridEndDate = anchor && isFiniteDate(anchor) && anchor > observedEnd ? anchor : observedEnd;
 
   let gridStart = startOfActivityWeek(observedStart);
-  const gridEnd = endOfActivityWeek(observedEnd);
+  const gridEnd = endOfActivityWeek(gridEndDate);
   let weekCount = weeksBetween(gridStart, gridEnd);
   const minWeeks = positiveInteger(options.minWeeks);
   const maxWeeks = positiveInteger(options.maxWeeks);
@@ -108,7 +108,6 @@ export function buildTokenActivity(series: UsageSeriesPoint[], options: TokenAct
     dayCount,
     longestStreak: longestObservedStreak(totalsByDay, observedStart, observedEnd),
     maxTokens,
-    months: activityMonthLabels(cells),
     totalTokens,
     weekCount
   };
@@ -170,23 +169,104 @@ export function activityDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+const activityDateLabelFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const activityMonthFormat = new Intl.DateTimeFormat(undefined, { month: "short" });
+
 export function formatActivityDateLabel(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(date);
+  return activityDateLabelFormat.format(date);
 }
 
-function activityMonthLabels(cells: TokenActivityCell[]): TokenActivityMonthLabel[] {
-  const labels: TokenActivityMonthLabel[] = [];
-  const seen = new Set<string>();
-  for (const cell of cells) {
-    const key = `${cell.date.getFullYear()}-${cell.date.getMonth()}`;
-    if (seen.has(key)) {
+export type ActivityAxisMonthLabel = {
+  key: string;
+  label: string;
+  left: number;
+};
+
+function startOfActivityGridWeek(date: Date): Date {
+  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  copy.setDate(copy.getDate() - ((copy.getDay() + 6) % 7));
+  return copy;
+}
+
+// The heatmap axis spans calendar months, not months that happen to contain
+// data: empty padding columns still get their label so the axis is never
+// truncated. Labels are laid out in pixels from the grid's left edge.
+// CJK glyphs are roughly 10px and latin ones 6px at the axis label size; the
+// estimate only decides whether two labels can sit next to each other.
+function estimateAxisLabelWidth(label: string): number {
+  let width = 0;
+  for (const char of label) {
+    width += (char.codePointAt(0) ?? 0) > 0x2e80 ? 10 : 6;
+  }
+  return width + 4;
+}
+
+/**
+ * Maps a pointer offset inside the canvas to a grid position. Shared by the
+ * component and its unit test: the gap between squares must not respond.
+ */
+export function cellAtOffset(offsetX: number, offsetY: number, weekStep: number, cellSize: number) {
+  const column = Math.floor(offsetX / weekStep);
+  const row = Math.floor(offsetY / weekStep);
+  const onCell = offsetX - column * weekStep <= cellSize && offsetY - row * weekStep <= cellSize;
+  return { column, onCell, row };
+}
+
+export function buildActivityAxisMonthLabels(options: {
+  columns: number;
+  formatMonth?: (date: Date) => string;
+  gridWidth: number;
+  lastDate: Date;
+  weekStep: number;
+}): ActivityAxisMonthLabel[] {
+  const { columns, gridWidth, lastDate, weekStep } = options;
+  if (columns <= 0) {
+    return [];
+  }
+  const formatMonth = options.formatMonth ?? ((date: Date) => activityMonthFormat.format(date));
+  const lastWeekStart = startOfActivityGridWeek(lastDate);
+  const gridStart = new Date(lastWeekStart.getFullYear(), lastWeekStart.getMonth(), lastWeekStart.getDate() - (columns - 1) * 7);
+  const lastWeekEnd = new Date(lastWeekStart.getFullYear(), lastWeekStart.getMonth(), lastWeekStart.getDate() + 6);
+  type Candidate = ActivityAxisMonthLabel & { partial?: boolean };
+  const candidates: Candidate[] = [];
+  const monthStart = new Date(gridStart.getFullYear(), gridStart.getMonth(), 1);
+  if (monthStart < gridStart) {
+    candidates.push({ key: `0-${gridStart.getMonth()}`, label: formatMonth(gridStart), left: 0, partial: true });
+    monthStart.setMonth(monthStart.getMonth() + 1);
+  }
+  while (monthStart <= lastWeekEnd) {
+    const column = Math.round((monthStart.getTime() - gridStart.getTime()) / 604800000);
+    if (column >= 0 && column < columns) {
+      const label = formatMonth(monthStart);
+      const labelWidth = estimateAxisLabelWidth(label);
+      const naturalLeft = column * weekStep;
+      // Keep the final label inside the grid instead of letting it run off the
+      // clipped right edge.
+      const left = Math.max(0, Math.min(naturalLeft, gridWidth - labelWidth));
+      candidates.push({ key: `${column}-${monthStart.getMonth()}`, label, left });
+    }
+    monthStart.setMonth(monthStart.getMonth() + 1);
+  }
+
+  // Labels may not overlap, but a real month boundary always beats the partial
+  // month that happens to sit on the left edge: it is dropped in its favour
+  // instead of leaving a hole in the axis.
+  const labels: ActivityAxisMonthLabel[] = [];
+  for (const candidate of candidates) {
+    const previous = labels[labels.length - 1];
+    // The new label has to clear the previous label's own box, not its own:
+    // completeness beats a wide aesthetic gap, otherwise the last month of a
+    // narrow axis silently disappears.
+    const threshold = previous ? estimateAxisLabelWidth(previous.label) + 4 : Number.POSITIVE_INFINITY;
+    if (!previous || candidate.left - previous.left >= threshold) {
+      labels.push({ key: candidate.key, label: candidate.label, left: candidate.left });
       continue;
     }
-    seen.add(key);
-    labels.push({
-      label: new Intl.DateTimeFormat(undefined, { month: "short" }).format(cell.date),
-      weekIndex: cell.weekIndex
-    });
+    const previousPartial = candidates.find((entry) => entry.key === previous.key)?.partial;
+    if (previousPartial) {
+      labels.pop();
+      labels.push({ key: candidate.key, label: candidate.label, left: candidate.left });
+    }
   }
   return labels;
 }

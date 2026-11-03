@@ -29,7 +29,9 @@ import {
   CalendarDays, ChartNoAxesCombined, ChartPie, CreditCard, GripHorizontal, Inbox, Layers3,
   Rocket, Server, UsersRound, WalletCards, Wifi
 } from "lucide-react";
-import { Tooltip as UiTooltip } from "@/components/ui/tooltip";
+import { ActivityHeatmap, type ActivityHeatmapTheme } from "@/components/activity-heatmap";
+import { useDailyActivitySeries } from "@/lib/use-daily-activity";
+import { useElementSize } from "@/lib/use-element-size";
 
 type OverviewUsageFilters = {
   modelFilter: string;
@@ -1487,25 +1489,21 @@ function TokenActivityOverviewWidget({
   usageStats: UsageStatsSnapshot;
 }) {
   const t = useAppText();
-  const gridAreaRef = useRef<HTMLDivElement>(null);
-  const gridAreaSize = useElementSize(gridAreaRef);
-  const fallbackWeekCount = overviewActivityWeekCount(dimensions);
-  // Square cells, sized from the row height; the grid then fills the card's
-  // full width by ADDING weeks (dim empty columns, data anchored at the
-  // right edge like GitHub) instead of stretching cells out of square.
-  const cellGap = dimensions.height <= 1 ? 2 : dimensions.width >= 3 ? 4 : 3;
-  const labelColumnWidth = dimensions.width >= 2 ? 20 : 0;
-  const heightForCells = Math.max(0, gridAreaSize.height - 28 - 6 * cellGap);
-  const cellSize = Math.max(6, Math.min(14, Math.floor(heightForCells / 7)));
-  let weekCount = fallbackWeekCount;
-  if (gridAreaSize.width > 0 && cellSize > 0) {
-    const widthWeeks = Math.floor((gridAreaSize.width - labelColumnWidth - cellGap) / (cellSize + cellGap));
-    weekCount = Math.max(fallbackWeekCount, Math.min(104, widthWeeks));
-  }
-  const activity = buildTokenActivity(usageStats.series, {
-    maxWeeks: weekCount,
-    minWeeks: weekCount
-  });
+  // The heatmap wants the store's whole history, not the dashboard's selected
+  // range, so it asks the main process for daily totals and only falls back to
+  // the range series while that first answer is in flight.
+  const history = useDailyActivitySeries();
+  // Only the fallback keeps a changing identity (the snapshot is rebuilt on
+  // every poll); once history is in, a poll must not rebuild a thousand cells.
+  const historyCells = useMemo(
+    () => history.map((point) => ({ bucket: point.day, totalTokens: point.totalTokens })),
+    [history]
+  );
+  const fallbackSeries = historyCells.length > 0 ? undefined : usageStats.series;
+  const activity = useMemo(
+    () => buildTokenActivity(historyCells.length > 0 ? historyCells : fallbackSeries ?? [], { anchor: new Date() }),
+    [fallbackSeries, historyCells]
+  );
   const showSummary = dimensions.height >= 2;
   const showLegend = dimensions.height >= 2 && dimensions.width >= 2;
 
@@ -1513,49 +1511,36 @@ function TokenActivityOverviewWidget({
     <Card className="overview-card flex h-full min-h-0 min-w-0 flex-col">
       <OverviewCardHeading icon={CalendarDays} title={t("Activity")} tone="green" trailing={<Badge variant="outline">{t("Tokens")}</Badge>} />
       <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-3">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col" ref={gridAreaRef}>
-        {showSummary ? (
-          <div className={cn("overview-nested-surface mb-3 grid overflow-hidden border", dimensions.width >= 2 ? "grid-cols-4" : "grid-cols-2")}>
-            <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(activity.longestStreak)} unit={t(activity.longestStreak === 1 ? "day" : "days")} />
-            <OverviewActivityStat label={t("Avg / day")} value={formatCompactNumber(Math.round(activity.avgPerDay))} />
-            <OverviewActivityStat label={t("Avg / week")} value={formatCompactNumber(Math.round(activity.avgPerWeek))} />
-            <OverviewActivityStat label={t("Total")} value={formatCompactNumber(activity.totalTokens)} />
-          </div>
-        ) : null}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {showSummary ? (
+            <div className={cn("overview-nested-surface mb-3 grid overflow-hidden border", dimensions.width >= 2 ? "grid-cols-4" : "grid-cols-2")}>
+              <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(activity.longestStreak)} unit={t(activity.longestStreak === 1 ? "day" : "days")} />
+              <OverviewActivityStat label={t("Avg / day")} value={formatCompactNumber(Math.round(activity.avgPerDay))} />
+              <OverviewActivityStat label={t("Avg / week")} value={formatCompactNumber(Math.round(activity.avgPerWeek))} />
+              <OverviewActivityStat label={t("Total")} value={formatCompactNumber(activity.totalTokens)} />
+            </div>
+          ) : null}
 
-        <OverviewActivityGrid activity={activity} dimensions={dimensions} />
+          <OverviewActivityGrid activity={activity} dimensions={dimensions} />
 
-        {showLegend ? (
-          <div className="mt-2 flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-            <span>{t("Less")}</span>
-            {[0, 1, 2, 3, 4].map((intensity) => (
-              <span
-                aria-hidden="true"
-                className="overview-activity-cell h-3 w-3 rounded-[3px]"
-                key={intensity}
-                style={{ backgroundColor: overviewActivityColor(intensity as TokenActivityCell["intensity"], true) }}
-              />
-            ))}
-            <span>{t("More")}</span>
-          </div>
-        ) : null}
+          {showLegend ? (
+            <div className="mt-2 flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <span>{t("Less")}</span>
+              {[0, 1, 2, 3, 4].map((intensity) => (
+                <span
+                  aria-hidden="true"
+                  className="overview-activity-cell h-3 w-3 rounded-[3px]"
+                  key={intensity}
+                  style={{ backgroundColor: overviewActivityColor(intensity as TokenActivityCell["intensity"], true) }}
+                />
+              ))}
+              <span>{t("More")}</span>
+            </div>
+          ) : null}
         </div>
       </CardContent>
     </Card>
   );
-}
-
-function overviewActivityWeekCount(dimensions: OverviewWidgetDimensions): number {
-  if (dimensions.height <= 1) {
-    if (dimensions.width >= 4) return 72;
-    if (dimensions.width >= 3) return 56;
-    if (dimensions.width >= 2) return 42;
-    return 28;
-  }
-  if (dimensions.width >= 4) return 53;
-  if (dimensions.width >= 3) return 40;
-  if (dimensions.width >= 2) return 26;
-  return 18;
 }
 
 function OverviewActivityStat({
@@ -1586,150 +1571,39 @@ function OverviewActivityGrid({
   dimensions: OverviewWidgetDimensions;
 }) {
   const t = useAppText();
-  const gridFrameRef = useRef<HTMLDivElement>(null);
-  const gridFrameSize = useElementSize(gridFrameRef);
-  const monthLabelRef = useRef<HTMLDivElement>(null);
-  const monthLabelSize = useElementSize(monthLabelRef);
-  const showDayLabels = dimensions.width >= 2;
-  const showMonthLabels = dimensions.height >= 2;
-  const dayLabels = [t("Mon"), t("Tue"), t("Wed"), t("Thu"), t("Fri"), t("Sat"), t("Sun")];
   const cellGap = dimensions.height <= 1 ? 2 : dimensions.width >= 3 ? 4 : 3;
-  const labelColumnWidth = showDayLabels ? 20 : 0;
-  // Reserve the month label row's measured height plus its `mb-1` margin: a hard-coded
-  // height under-reserves, which pushes the last activity row past the frame and clips it.
-  const monthLabelBlockHeight = showMonthLabels ? (monthLabelSize.height || 20) + MONTH_LABEL_BOTTOM_MARGIN : 0;
-  const cellSize = activityGridCellSize({
-    availableHeight: gridFrameSize.height,
-    availableWidth: gridFrameSize.width,
-    cellGap,
-    fallbackCellSize: dimensions.height <= 1 ? 8 : dimensions.width >= 3 ? 10 : 9,
-    labelColumnWidth,
-    monthLabelBlockHeight,
-    weekCount: activity.weekCount
-  });
-  const activityColumns = `repeat(${activity.weekCount}, ${cellSize}px)`;
-  const gridTemplateColumns = `${showDayLabels ? `${labelColumnWidth}px ` : ""}${activityColumns}`;
-  const gridWidth = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + activity.weekCount * cellSize + Math.max(0, activity.weekCount - 1) * cellGap;
+  const theme = useMemo<ActivityHeatmapTheme>(() => ({
+    colorFor: (cell) => overviewActivityColor(cell.intensity, cell.inObservedRange),
+    dayLabels: [t("Mon"), t("Tue"), t("Wed"), t("Thu"), t("Fri"), t("Sat"), t("Sun")],
+    detailClassName: "text-muted-foreground",
+    labelClassName: "text-[10px] font-medium leading-none text-muted-foreground",
+    labelColumnWidth: 20,
+    monthLabelClassName: "text-[10px] font-medium leading-none text-muted-foreground",
+    paddingColor: ACTIVITY_PADDING_COLOR,
+    tooltipContentClassName: "border-border/70 text-[11px]"
+  }), [t]);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" ref={gridFrameRef}>
-      {cellSize > 0 ? (
-        <div className="min-w-0 overflow-visible">
-          <div className="w-full max-w-full" style={{ width: `${gridWidth}px` }}>
-            {showMonthLabels ? (
-              <div
-                className="relative mb-1 text-[10px] font-medium leading-none text-muted-foreground"
-                ref={monthLabelRef}
-                style={{ height: monthLabelSize.height || 14 }}
-              >
-                {activity.months.map((month, index) => {
-                  const left = labelColumnWidth + (labelColumnWidth ? cellGap : 0) + month.weekIndex * (cellSize + cellGap);
-                  const isLast = index === activity.months.length - 1;
-                  const fitsRight = left + month.label.length * 11 + 4 <= gridWidth;
-                  return (
-                    <span
-                      className="absolute whitespace-nowrap"
-                      key={`${month.label}-${month.weekIndex}`}
-                      style={{
-                        left: isLast && !fitsRight ? undefined : `${left}px`,
-                        right: isLast && !fitsRight ? 0 : undefined,
-                        top: 0
-                      }}
-                    >
-                      {month.label}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : null}
-            <div
-              className="grid min-h-[64px]"
-              role="img"
-              aria-label={`${t("Activity")} ${t("Tokens")}`}
-              style={{
-                gap: `${cellGap}px`,
-                gridTemplateColumns,
-                gridTemplateRows: `repeat(7, ${cellSize}px)`
-              }}
-            >
-              {showDayLabels ? dayLabels.map((label, index) => (
-                <span
-                  className="self-center truncate text-[10px] font-medium leading-none text-muted-foreground"
-                  key={`${label}-${index}`}
-                  style={{ gridColumn: 1, gridRow: index + 1 }}
-                >
-                  {label}
-                </span>
-              )) : null}
-              {activity.cells.map((cell) => (
-                <UiTooltip
-                  aria-label={`${cell.dateLabel}: ${formatActivityTokenCount(cell.totalTokens)} ${t("tokens")}`}
-                  align={cell.weekIndex <= 1 ? "start" : cell.weekIndex >= activity.weekCount - 2 ? "end" : "center"}
-                  className="overview-activity-cell rounded-[4px]"
-                  content={(
-                    <>
-                      <span className="block font-semibold">{cell.dateLabel}</span>
-                      <span className="mt-0.5 block text-muted-foreground">{formatActivityTokenCount(cell.totalTokens)} {t("tokens")}</span>
-                    </>
-                  )}
-                  contentClassName="min-w-[112px] border-border/70 px-2 py-1.5 text-left text-[11px] font-normal"
-                  key={cell.dateKey}
-                  side={cell.dayIndex <= 1 ? "bottom" : "top"}
-                  style={{
-                    backgroundColor: overviewActivityColor(cell.intensity, cell.inObservedRange),
-                    gridColumn: cell.weekIndex + (showDayLabels ? 2 : 1),
-                    gridRow: cell.dayIndex + 1,
-                    height: `${cellSize}px`,
-                    width: `${cellSize}px`
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <ActivityHeatmap
+      activity={activity}
+      ariaLabel={`${t("Activity")} ${t("Tokens")}: ${formatActivityTokenCount(activity.totalTokens)} ${t("tokens")}`}
+      cellGap={cellGap}
+      fallbackCellSize={dimensions.height <= 1 ? 8 : 10}
+      showDayLabels={dimensions.width >= 2}
+      showMonthLabels={dimensions.height >= 2}
+      theme={theme}
+      tokenCount={formatActivityTokenCount}
+      tokensLabel={t("tokens")}
+    />
   );
+
 }
 
-// Keeps the sizing math in sync with the month label row's `mb-1` class.
-const MONTH_LABEL_BOTTOM_MARGIN = 4;
-
-type ActivityGridCellSizeInput = {
-  availableHeight: number;
-  availableWidth: number;
-  cellGap: number;
-  fallbackCellSize: number;
-  labelColumnWidth: number;
-  monthLabelBlockHeight: number;
-  weekCount: number;
-};
-
-function activityGridCellSize({
-  availableHeight,
-  availableWidth,
-  cellGap,
-  fallbackCellSize,
-  labelColumnWidth,
-  monthLabelBlockHeight,
-  weekCount
-}: ActivityGridCellSizeInput): number {
-  if (weekCount <= 0) {
-    return 0;
-  }
-  if (availableHeight <= 0 || availableWidth <= 0) {
-    return fallbackCellSize;
-  }
-
-  // Cells stay square; the grid fills the card's width through its week
-  // count (the widget adds dim trailing weeks), never by stretching.
-  const widthForCells = availableWidth - labelColumnWidth - (labelColumnWidth ? cellGap : 0) - Math.max(0, weekCount - 1) * cellGap;
-  const heightForCells = availableHeight - monthLabelBlockHeight - 6 * cellGap;
-  return Math.max(1, Math.floor(Math.min(widthForCells / weekCount, heightForCells / 7)));
-}
+const ACTIVITY_PADDING_COLOR = "rgba(148,163,184,.10)";
+const activityTokenCountFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
 function formatActivityTokenCount(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(Math.round(Math.max(0, value)));
+  return activityTokenCountFormat.format(Math.round(Math.max(0, value)));
 }
 
 function overviewActivityColor(intensity: TokenActivityCell["intensity"], inRange: boolean): string {
@@ -6391,39 +6265,6 @@ function ChartFrame({ children, fill = false }: { children: (size: { height: num
   );
 }
 
-function useElementSize<T extends HTMLElement>(containerRef: { current: T | null }) {
-  const [size, setSize] = useState({ height: 0, width: 0 });
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-
-    const updateSize = (width: number, height: number) => {
-      const next = {
-        height: Math.max(0, Math.floor(height)),
-        width: Math.max(0, Math.floor(width))
-      };
-      setSize((current) => (current.height === next.height && current.width === next.width ? current : next));
-    };
-
-    const rect = container.getBoundingClientRect();
-    updateSize(rect.width, rect.height);
-
-    const observer = new ResizeObserver(([entry]) => {
-      if (!entry) {
-        return;
-      }
-      updateSize(entry.contentRect.width, entry.contentRect.height);
-    });
-
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [containerRef]);
-
-  return size;
-}
 
 function TokenTooltip({
   active,

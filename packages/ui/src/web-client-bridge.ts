@@ -137,6 +137,7 @@ const webClientBridge: CcrApi = {
   getRequestLogBodyChunk: (request) => rpc("getRequestLogBodyChunk", [request]) as ReturnType<CcrApi["getRequestLogBodyChunk"]>,
   getRequestLogs: (filter) => rpc("getRequestLogs", [filter]) as ReturnType<CcrApi["getRequestLogs"]>,
   getUpdateStatus: () => rpc("getUpdateStatus") as ReturnType<CcrApi["getUpdateStatus"]>,
+  getUsageDailyActivity: () => rpc("getUsageDailyActivity") as ReturnType<CcrApi["getUsageDailyActivity"]>,
   getUsageStats: (range, filter) => rpc("getUsageStats", [range, filter]) as ReturnType<CcrApi["getUsageStats"]>,
   getTraySnapshot: () => Promise.reject(new Error("The tray snapshot is only available in the desktop app.")) as ReturnType<CcrApi["getTraySnapshot"]>,
   importLocalAgentProvider: (request) => rpc("importLocalAgentProvider", [request]) as ReturnType<CcrApi["importLocalAgentProvider"]>,

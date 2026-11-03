@@ -43,7 +43,7 @@ import { proxyService } from "@ccr/core/proxy/service";
 import { listMcpServerTools } from "@ccr/core/mcp/tool-discovery";
 import { closeRequestLogRuntime, getAgentAnalysis, getAgentTracePayload, getRequestLogBodyChunk, getRequestLogDetail, getRequestLogs } from "@ccr/core/observability/request-log-store";
 import { shouldRecordRequestLogs } from "@ccr/core/observability/raw-trace-sync";
-import { getUsageStats, resetOverviewStatistics } from "@ccr/core/usage/store";
+import { getUsageDailyActivity, getUsageStats, resetOverviewStatistics } from "@ccr/core/usage/store";
 import { gatewayService } from "@ccr/core/gateway/service";
 import { shouldRestartGatewayForRuntimeConfigChange } from "@ccr/core/gateway/runtime-change";
 import { getProviderAccountSnapshots, invalidateProviderAccountSnapshotCache, resetCodexRateLimitCredit, testProviderAccountConnector } from "@ccr/core/providers/account-service";
@@ -342,6 +342,7 @@ const rpcHandlers: Record<string, RpcHandler> = {
   getRequestLogBodyChunk: (request) => getRequestLogBodyChunk(request as RequestLogBodyChunkRequest),
   getRequestLogs: (filter) => getRequestLogs(filter as RequestLogListFilter | undefined),
   getUpdateStatus: () => unsupportedUpdateStatus,
+  getUsageDailyActivity: () => getUsageDailyActivity(),
   getUsageStats: (range, filter) => getUsageStats(range as UsageStatsRange | undefined, filter as UsageStatsFilter | undefined),
   importLocalAgentProvider: (request) => importLocalAgentProvider(request as LocalAgentProviderImportRequest),
   installProxyCertificate: () => proxyService.installCertificate(),

@@ -2375,6 +2375,13 @@ export type UsageSeriesPoint = UsageTotals & {
   label: string;
 };
 
+// One calendar day of token totals across the store's whole history; the
+// activity calendar lays every one of them out instead of a fixed week count.
+export type UsageDailyActivityPoint = {
+  day: string;
+  totalTokens: number;
+};
+
 export type UsageComparisonRow = UsageTotals & {
   caption: string;
   client?: string;

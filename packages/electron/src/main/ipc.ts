@@ -50,7 +50,7 @@ import { listMcpServerTools } from "@ccr/core/mcp/tool-discovery";
 import { getAgentAnalysis, getAgentTracePayload, getRequestLogBodyChunk, getRequestLogDetail, getRequestLogs } from "@ccr/core/observability/request-log-store";
 import trayController from "./tray-controller";
 import { appUpdateService } from "./update-service";
-import { getUsageStats, resetOverviewStatistics } from "@ccr/core/usage/store";
+import { getUsageDailyActivity, getUsageStats, resetOverviewStatistics } from "@ccr/core/usage/store";
 import { applyNativeThemePreference } from "./native-theme";
 import { registerProviderAccountWebContentFetchHandler } from "./provider-account-webcontent";
 import windowsManager from "./windows";
@@ -127,6 +127,7 @@ ipcMain.handle(IPC_CHANNELS.appGetRequestLogBodyChunk, (_event, request) => getR
 ipcMain.handle(IPC_CHANNELS.appGetRequestLogs, (_event, filter?: RequestLogListFilter) => getRequestLogs(filter));
 ipcMain.handle(IPC_CHANNELS.appGetUpdateStatus, () => appUpdateService.getStatus());
 ipcMain.handle(IPC_CHANNELS.appGetUsageStats, (_event, range?: UsageStatsRange, filter?: UsageStatsFilter) => getUsageStats(range, filter));
+ipcMain.handle(IPC_CHANNELS.appGetUsageDailyActivity, () => getUsageDailyActivity());
 ipcMain.handle(IPC_CHANNELS.appGetTraySnapshot, async (_event, provider?: string) => {
   const filter: UsageStatsFilter = typeof provider === "string" && provider.trim() ? { provider } : { includeProxy: true };
   const [today, day, week, month, halfYear, allMonth, config, accounts] = await Promise.all([

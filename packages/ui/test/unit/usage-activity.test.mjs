@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTokenActivity, activityDateKey } from "@ccr/ui/lib/usage-activity.ts";
+import { activityDateKey, buildActivityAxisMonthLabels, buildTokenActivity, cellAtOffset } from "@ccr/ui/lib/usage-activity.ts";
 
 test("buildTokenActivity summarizes observed token days and streaks", () => {
   withTimezone("America/New_York", () => {
@@ -97,3 +97,92 @@ function withTimezone(timezone, run) {
     }
   }
 }
+
+test("activity axis labels every month it spans, padding included", () => {
+  const weekStep = 17;
+  const columns = 66;
+  const gridWidth = columns * weekStep - 4;
+  const labels = buildActivityAxisMonthLabels({
+    columns,
+    formatMonth: (date) => `${date.getMonth() + 1}月`,
+    gridWidth,
+    lastDate: new Date(2026, 10, 3),
+    weekStep
+  });
+
+  // 66 weeks ending 2026-11-03 reach back into August 2025: 16 named months.
+  assert.equal(labels.length, 16);
+  assert.equal(labels[0].label, "8月");
+  assert.deepEqual(labels.slice(-3).map((entry) => entry.label), ["9月", "10月", "11月"]);
+  assert.equal(labels[0].left, 0);
+
+  for (let index = 1; index < labels.length; index += 1) {
+    assert.ok(labels[index].left > labels[index - 1].left, "labels stay left to right");
+  }
+
+  const last = labels[labels.length - 1];
+  // Same estimate the axis uses: CJK glyphs are wider than latin digits.
+  const estimateWidth = (label) => [...label].reduce((total, char) => total + (char.codePointAt(0) > 0x2e80 ? 10 : 6), 4);
+  assert.ok(
+    last.left + estimateWidth(last.label) <= gridWidth,
+    "the final label stays inside the grid instead of running off the clipped edge"
+  );
+});
+
+test("activity axis prefers a real month boundary over a squeezed partial month", () => {
+  const weekStep = 10;
+  const columns = 32;
+  const labels = buildActivityAxisMonthLabels({
+    columns,
+    formatMonth: (date) => `${date.getMonth() + 1}月`,
+    gridWidth: columns * weekStep - 4,
+    lastDate: new Date(2026, 10, 3),
+    weekStep
+  });
+
+  // The grid starts mid-March, so April's boundary lands on top of the partial
+  // "3月" label: the boundary wins instead of leaving a hole in the axis.
+  assert.equal(labels[0].label, "4月");
+  assert.deepEqual(labels.slice(-2).map((entry) => entry.label), ["10月", "11月"]);
+
+  const estimateWidth = (label) => [...label].reduce((total, char) => total + (char.codePointAt(0) > 0x2e80 ? 10 : 6), 4);
+  for (let index = 1; index < labels.length; index += 1) {
+    const previous = labels[index - 1];
+    assert.ok(
+      labels[index].left >= previous.left + estimateWidth(previous.label),
+      "labels never overlap, but the axis still names every month that fits"
+    );
+  }
+});
+
+test("activity axis still labels a short narrow calendar", () => {
+  const weekStep = 8;
+  const columns = 8;
+  const labels = buildActivityAxisMonthLabels({
+    columns,
+    formatMonth: (date) => `${date.getMonth() + 1}月`,
+    gridWidth: columns * weekStep - 2,
+    lastDate: new Date(2026, 10, 3),
+    weekStep
+  });
+
+  assert.ok(labels.length >= 1, "a short axis still labels the month it can fit");
+});
+
+test("activity axis renders nothing without columns", () => {
+  assert.deepEqual(
+    buildActivityAxisMonthLabels({ columns: 0, gridWidth: 0, lastDate: new Date(2026, 10, 3), weekStep: 17 }),
+    []
+  );
+});
+
+test("cellAtOffset maps a pointer to a square and rejects the gaps", () => {
+  const weekStep = 17;
+  const cellSize = 13;
+
+  assert.deepEqual(cellAtOffset(0, 0, weekStep, cellSize), { column: 0, onCell: true, row: 0 });
+  assert.deepEqual(cellAtOffset(3 * weekStep + cellSize, 2 * weekStep + cellSize, weekStep, cellSize), { column: 3, onCell: true, row: 2 });
+  // The 4px gutter between squares must not respond to hover.
+  assert.equal(cellAtOffset(3 * weekStep + cellSize + 2, 0, weekStep, cellSize).onCell, false);
+  assert.equal(cellAtOffset(0, weekStep - 1, weekStep, cellSize).onCell, false);
+});
