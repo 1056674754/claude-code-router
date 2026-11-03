@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activityDateKey, buildActivityAxisMonthLabels, buildTokenActivity, cellAtOffset } from "@ccr/ui/lib/usage-activity.ts";
+import { activityScopeDays, activityDateKey, buildActivityAxisMonthLabels, buildTokenActivity, cellAtOffset, summarizeActivityScope } from "@ccr/ui/lib/usage-activity.ts";
 
 test("buildTokenActivity summarizes observed token days and streaks", () => {
   withTimezone("America/New_York", () => {
@@ -185,4 +185,59 @@ test("cellAtOffset maps a pointer to a square and rejects the gaps", () => {
   // The 4px gutter between squares must not respond to hover.
   assert.equal(cellAtOffset(3 * weekStep + cellSize + 2, 0, weekStep, cellSize).onCell, false);
   assert.equal(cellAtOffset(0, weekStep - 1, weekStep, cellSize).onCell, false);
+});
+
+test("every activity scope states the window it averages", () => {
+  assert.equal(activityScopeDays("all"), null);
+  assert.equal(activityScopeDays("30d"), 30);
+  assert.equal(activityScopeDays("7d"), 7);
+});
+
+test("summarizeActivityScope recomputes the summary for a trailing window", () => {
+  const series = [
+    { bucket: "2026-10-01", totalTokens: 100 },
+    { bucket: "2026-10-02", totalTokens: 200 },
+    { bucket: "2026-10-04", totalTokens: 400 },
+    { bucket: "2026-11-01", totalTokens: 10 },
+    { bucket: "2026-11-02", totalTokens: 20 }
+  ];
+  const anchor = new Date(2026, 10, 3);
+  const activity = buildTokenActivity(series, { anchor });
+
+  const all = summarizeActivityScope(activity, "all", anchor);
+  assert.equal(all.dayCount, activity.dayCount);
+  assert.equal(all.totalTokens, 730);
+  assert.equal(all.longestStreak, 2);
+
+  // Oct 5 .. Nov 3: only the two quiet November days fall inside the window.
+  const month = summarizeActivityScope(activity, "30d", anchor);
+  assert.equal(month.dayCount, 30);
+  assert.equal(month.totalTokens, 30);
+  assert.equal(month.activeDays, 2);
+  assert.equal(month.longestStreak, 2);
+  assert.equal(month.avgPerDay, 1);
+  assert.equal(month.avgPerWeek, 7);
+
+  const week = summarizeActivityScope(activity, "7d", anchor);
+  assert.equal(week.dayCount, 7);
+  assert.equal(week.totalTokens, 30);
+  assert.equal(week.avgPerDay, 30 / 7);
+});
+
+test("a trailing window before the first record averages over quiet days", () => {
+  const anchor = new Date(2026, 10, 3);
+  const activity = buildTokenActivity([{ bucket: "2026-11-02", totalTokens: 70 }], { anchor });
+  const week = summarizeActivityScope(activity, "7d", anchor);
+
+  assert.equal(week.dayCount, 7);
+  assert.equal(week.totalTokens, 70);
+  assert.equal(week.avgPerDay, 10);
+  assert.equal(week.activeDays, 1);
+
+  // The window can also sit entirely behind the history: it averages to zero
+  // instead of borrowing the totals of the observed days.
+  const empty = summarizeActivityScope(activity, "7d", new Date(2026, 11, 20));
+  assert.equal(empty.totalTokens, 0);
+  assert.equal(empty.avgPerDay, 0);
+  assert.equal(empty.longestStreak, 0);
 });

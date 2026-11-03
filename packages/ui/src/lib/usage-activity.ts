@@ -23,6 +23,65 @@ export type TokenActivitySummary = {
   weekCount: number;
 };
 
+// The summary row averages over some window, and which one has to be visible in
+// the UI: "all" is every day the store still knows about, the other two are
+// trailing calendar windows that match the range cards elsewhere.
+export type ActivityScope = "all" | "30d" | "7d";
+
+export const ACTIVITY_SCOPES: readonly ActivityScope[] = ["all", "30d", "7d"];
+
+export function activityScopeDays(scope: ActivityScope): number | null {
+  if (scope === "30d") {
+    return 30;
+  }
+  if (scope === "7d") {
+    return 7;
+  }
+  return null;
+}
+
+export type ActivityScopeSummary = {
+  activeDays: number;
+  avgPerDay: number;
+  avgPerWeek: number;
+  dayCount: number;
+  longestStreak: number;
+  totalTokens: number;
+};
+
+export function summarizeActivityScope(
+  activity: TokenActivitySummary,
+  scope: ActivityScope,
+  anchor: Date = new Date()
+): ActivityScopeSummary {
+  const windowDays = activityScopeDays(scope);
+  if (windowDays === null) {
+    return {
+      activeDays: activity.activeDays,
+      avgPerDay: activity.avgPerDay,
+      avgPerWeek: activity.avgPerWeek,
+      dayCount: activity.dayCount,
+      longestStreak: activity.longestStreak,
+      totalTokens: activity.totalTokens
+    };
+  }
+  const end = startOfLocalDay(anchor);
+  const start = addDays(end, -(windowDays - 1));
+  const totalsByDay = new Map<string, number>();
+  for (const cell of activity.cells) {
+    totalsByDay.set(cell.dateKey, cell.totalTokens);
+  }
+  const totalTokens = sumObservedTokens(totalsByDay, start, end);
+  return {
+    activeDays: countObservedDays(totalsByDay, start, end, (value) => value > 0),
+    avgPerDay: totalTokens / windowDays,
+    avgPerWeek: totalTokens / (windowDays / 7),
+    dayCount: windowDays,
+    longestStreak: longestObservedStreak(totalsByDay, start, end),
+    totalTokens
+  };
+}
+
 type TokenActivityOptions = {
   anchor?: Date | string;
   maxWeeks?: number;

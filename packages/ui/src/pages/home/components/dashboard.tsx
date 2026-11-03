@@ -22,7 +22,7 @@ import {
   useEffect, useMemo, useRef, useSensor, useSensors, useSortable,
   useState, X, XAxis, YAxis
 } from "../shared/index";
-import { buildTokenActivity, type TokenActivityCell } from "@/lib/usage-activity";
+import { buildTokenActivity, summarizeActivityScope, type TokenActivityCell } from "@/lib/usage-activity";
 import { LogExpandedDetails } from "./network-logs";
 import { ShareCardWidget } from "./share-cards";
 import {
@@ -30,6 +30,8 @@ import {
   Rocket, Server, UsersRound, WalletCards, Wifi
 } from "lucide-react";
 import { ActivityHeatmap, type ActivityHeatmapTheme } from "@/components/activity-heatmap";
+import { ActivityScopeSwitch } from "@/components/activity-scope-switch";
+import { useActivityScope } from "@/lib/use-activity-scope";
 import { useDailyActivitySeries } from "@/lib/use-daily-activity";
 import { useElementSize } from "@/lib/use-element-size";
 
@@ -1506,18 +1508,34 @@ function TokenActivityOverviewWidget({
   );
   const showSummary = dimensions.height >= 2;
   const showLegend = dimensions.height >= 2 && dimensions.width >= 2;
+  const [scope, setScope] = useActivityScope();
+  // The streak and the totals follow the same window as the averages, so the
+  // four cells always answer the question printed on the switch.
+  const summary = useMemo(() => summarizeActivityScope(activity, scope), [activity, scope]);
+  const scopeLabel = scope === "all" ? t("All time") : t(scope);
+  const scopeWeeks = Math.max(1, Math.round((summary.dayCount / 7) * 10) / 10);
 
   return (
     <Card className="overview-card flex h-full min-h-0 min-w-0 flex-col">
-      <OverviewCardHeading icon={CalendarDays} title={t("Activity")} tone="green" trailing={<Badge variant="outline">{t("Tokens")}</Badge>} />
+      <OverviewCardHeading
+        icon={CalendarDays}
+        title={t("Activity")}
+        tone="green"
+        trailing={
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ActivityScopeSwitch onChange={setScope} translate={t} value={scope} />
+            <Badge variant="outline">{t("Tokens")}</Badge>
+          </div>
+        }
+      />
       <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-3">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {showSummary ? (
             <div className={cn("overview-nested-surface mb-3 grid overflow-hidden border", dimensions.width >= 2 ? "grid-cols-4" : "grid-cols-2")}>
-              <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(activity.longestStreak)} unit={t(activity.longestStreak === 1 ? "day" : "days")} />
-              <OverviewActivityStat label={t("Avg / day")} value={formatCompactNumber(Math.round(activity.avgPerDay))} />
-              <OverviewActivityStat label={t("Avg / week")} value={formatCompactNumber(Math.round(activity.avgPerWeek))} />
-              <OverviewActivityStat label={t("Total")} value={formatCompactNumber(activity.totalTokens)} />
+              <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(summary.longestStreak)} unit={t(summary.longestStreak === 1 ? "day" : "days")} />
+              <OverviewActivityStat label={`${t("Avg / day")} · ${summary.dayCount} ${t("days")}`} value={formatCompactNumber(Math.round(summary.avgPerDay))} />
+              <OverviewActivityStat label={`${t("Avg / week")} · ${scopeWeeks} ${t("weeks")}`} value={formatCompactNumber(Math.round(summary.avgPerWeek))} />
+              <OverviewActivityStat label={`${t("Total")} · ${scopeLabel}`} value={formatCompactNumber(summary.totalTokens)} />
             </div>
           ) : null}
 

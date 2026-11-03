@@ -4,9 +4,10 @@ import {
 } from "../shared";
 import { useMemo } from "react";
 import { ActivityHeatmap, type ActivityHeatmapTheme } from "@/components/activity-heatmap";
+import { ActivityScopeSwitch } from "@/components/activity-scope-switch";
+import { useActivityScope } from "@/lib/use-activity-scope";
 import { useDailyActivitySeries } from "@/lib/use-daily-activity";
-import { activityDateKey } from "@/lib/usage-activity";
-import { buildTokenActivity, type TokenActivityCell } from "../../../lib/usage-activity";
+import { activityDateKey, buildTokenActivity, summarizeActivityScope, type TokenActivityCell } from "@/lib/usage-activity";
 export function RangeSwitch({ range, onChange }: { range: UsageStatsRange; onChange: (range: UsageStatsRange) => void }) {
   const t = useTrayText();
 
@@ -169,19 +170,34 @@ export function TokenActivityPanel({
     () => buildTokenActivity(historyCells.length > 0 ? historyCells : fallbackSeries ?? [], { anchor: new Date() }),
     [fallbackSeries, historyCells]
   );
+  const [scope, setScope] = useActivityScope();
+  const summary = useMemo(() => summarizeActivityScope(activity, scope), [activity, scope]);
+  const scopeLabel = scope === "all" ? t("All time") : t(scope);
+  const scopeWeeks = Math.max(1, Math.round((summary.dayCount / 7) * 10) / 10);
 
   return (
     <div className="tray-panel min-w-0 p-2.5">
       <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
         <div className="truncate text-[11px] font-bold text-slate-100">{t("Activity")}</div>
-        <div className="shrink-0 text-[10px] font-medium text-slate-400">{t("Tokens")}</div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ActivityScopeSwitch
+            className="tray-segmented flex shrink-0"
+            itemClassName="tray-segmented-item h-5 px-1.5 text-[9px] font-semibold leading-none"
+            activeItemClassName=""
+            inactiveItemClassName=""
+            onChange={setScope}
+            translate={t}
+            value={scope}
+          />
+          <span className="text-[10px] font-medium text-slate-400">{t("Tokens")}</span>
+        </div>
       </div>
 
       <div className="tray-panel-subtle mb-2 grid grid-cols-4 gap-px overflow-hidden">
-        <TokenActivityStat label={t("Longest streak")} value={formatCompactNumber(activity.longestStreak)} unit={t(activity.longestStreak === 1 ? "day" : "days")} />
-        <TokenActivityStat label={t("Avg / day")} value={formatCompactNumber(Math.round(activity.avgPerDay))} />
-        <TokenActivityStat label={t("Avg / week")} value={formatCompactNumber(Math.round(activity.avgPerWeek))} />
-        <TokenActivityStat label={t("Total")} value={formatCompactNumber(activity.totalTokens)} />
+        <TokenActivityStat label={t("Longest streak")} value={formatCompactNumber(summary.longestStreak)} unit={t(summary.longestStreak === 1 ? "day" : "days")} />
+        <TokenActivityStat label={`${t("Avg / day")} · ${summary.dayCount} ${t("days")}`} value={formatCompactNumber(Math.round(summary.avgPerDay))} />
+        <TokenActivityStat label={`${t("Avg / week")} · ${scopeWeeks} ${t("weeks")}`} value={formatCompactNumber(Math.round(summary.avgPerWeek))} />
+        <TokenActivityStat label={`${t("Total")} · ${scopeLabel}`} value={formatCompactNumber(summary.totalTokens)} />
       </div>
 
       <TokenActivityGrid activity={activity} />
