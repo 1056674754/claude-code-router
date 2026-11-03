@@ -32,6 +32,7 @@ import {
 import { ActivityHeatmap, type ActivityHeatmapTheme } from "@/components/activity-heatmap";
 import { ActivityScopeSwitch } from "@/components/activity-scope-switch";
 import { useActivityScope } from "@/lib/use-activity-scope";
+import { useToday } from "@/lib/use-today";
 import { useDailyActivitySeries } from "@/lib/use-daily-activity";
 import { useElementSize } from "@/lib/use-element-size";
 
@@ -1502,18 +1503,27 @@ function TokenActivityOverviewWidget({
     [history]
   );
   const fallbackSeries = historyCells.length > 0 ? undefined : usageStats.series;
+  // A window left open across midnight has to slide to the new day, so the
+  // anchor is state and both the calendar and the summary read it.
+  const today = useToday();
   const activity = useMemo(
-    () => buildTokenActivity(historyCells.length > 0 ? historyCells : fallbackSeries ?? [], { anchor: new Date() }),
-    [fallbackSeries, historyCells]
+    () => buildTokenActivity(historyCells.length > 0 ? historyCells : fallbackSeries ?? [], { anchor: today }),
+    [fallbackSeries, historyCells, today]
   );
   const showSummary = dimensions.height >= 2;
   const showLegend = dimensions.height >= 2 && dimensions.width >= 2;
   const [scope, setScope] = useActivityScope();
   // The streak and the totals follow the same window as the averages, so the
   // four cells always answer the question printed on the switch.
-  const summary = useMemo(() => summarizeActivityScope(activity, scope), [activity, scope]);
+  const summary = useMemo(() => summarizeActivityScope(activity, scope, today), [activity, scope, today]);
   const scopeLabel = scope === "all" ? t("All time") : t(scope);
-  const scopeWeeks = Math.max(1, Math.round((summary.dayCount / 7) * 10) / 10);
+  // Trailing windows divide by the window, so print how many of those days
+  // actually hold data; a fresh install must not read as "30 quiet days".
+  const dayLabel =
+    scope === "all"
+      ? `${t("Avg / day")} · ${summary.dayCount} ${t("days")}`
+      : `${t("Avg / day")} · ${summary.activeDays}/${summary.dayCount} ${t("days")}`;
+  const scopeWeeks = Math.max(0.1, Math.round((summary.dayCount / 7) * 10) / 10);
 
   return (
     <Card className="overview-card flex h-full min-h-0 min-w-0 flex-col">
@@ -1523,7 +1533,14 @@ function TokenActivityOverviewWidget({
         tone="green"
         trailing={
           <div className="flex min-w-0 items-center gap-1.5">
-            <ActivityScopeSwitch onChange={setScope} translate={t} value={scope} />
+            {showSummary ? (
+              <>
+                {dimensions.width >= 2 ? (
+                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground">{t("Statistics window")}</span>
+                ) : null}
+                <ActivityScopeSwitch onChange={setScope} translate={t} value={scope} />
+              </>
+            ) : null}
             <Badge variant="outline">{t("Tokens")}</Badge>
           </div>
         }
@@ -1532,8 +1549,8 @@ function TokenActivityOverviewWidget({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {showSummary ? (
             <div className={cn("overview-nested-surface mb-3 grid overflow-hidden border", dimensions.width >= 2 ? "grid-cols-4" : "grid-cols-2")}>
-              <OverviewActivityStat label={t("Longest streak")} value={formatCompactNumber(summary.longestStreak)} unit={t(summary.longestStreak === 1 ? "day" : "days")} />
-              <OverviewActivityStat label={`${t("Avg / day")} · ${summary.dayCount} ${t("days")}`} value={formatCompactNumber(Math.round(summary.avgPerDay))} />
+              <OverviewActivityStat label={`${t("Longest streak")} · ${scopeLabel}`} value={formatCompactNumber(summary.longestStreak)} unit={t(summary.longestStreak === 1 ? "day" : "days")} />
+              <OverviewActivityStat label={dayLabel} value={formatCompactNumber(Math.round(summary.avgPerDay))} />
               <OverviewActivityStat label={`${t("Avg / week")} · ${scopeWeeks} ${t("weeks")}`} value={formatCompactNumber(Math.round(summary.avgPerWeek))} />
               <OverviewActivityStat label={`${t("Total")} · ${scopeLabel}`} value={formatCompactNumber(summary.totalTokens)} />
             </div>
@@ -1572,7 +1589,7 @@ function OverviewActivityStat({
 }) {
   return (
     <div className="overview-activity-stat min-w-0 border-r border-border/60 bg-transparent px-3 py-2 last:border-r-0">
-      <div className="truncate text-[11px] font-medium text-muted-foreground">{label}</div>
+      <div className="truncate text-[11px] font-medium text-muted-foreground" title={label}>{label}</div>
       <div className="mt-0.5 flex min-w-0 items-baseline gap-1">
         <span className="truncate text-[17px] font-semibold tracking-tight text-foreground">{value}</span>
         {unit ? <span className="shrink-0 text-[11px] text-muted-foreground">{unit}</span> : null}

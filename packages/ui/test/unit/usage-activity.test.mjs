@@ -187,10 +187,35 @@ test("cellAtOffset maps a pointer to a square and rejects the gaps", () => {
   assert.equal(cellAtOffset(0, weekStep - 1, weekStep, cellSize).onCell, false);
 });
 
-test("every activity scope states the window it averages", () => {
+test("activity scope windows are 30 and 7 days, all-time has none", () => {
   assert.equal(activityScopeDays("all"), null);
   assert.equal(activityScopeDays("30d"), 30);
   assert.equal(activityScopeDays("7d"), 7);
+});
+
+test("a trailing window includes both of its edge days and excludes the day before", () => {
+  const series = [
+    { bucket: "2026-10-04", totalTokens: 5 },
+    { bucket: "2026-10-05", totalTokens: 11 },
+    { bucket: "2026-11-02", totalTokens: 7 },
+    { bucket: "2026-11-03", totalTokens: 13 }
+  ];
+  const anchor = new Date(2026, 10, 3);
+  const activity = buildTokenActivity(series, { anchor });
+
+  // Oct 5 .. Nov 3 inclusive: the first day of the window and the anchor day
+  // are both inside, Oct 4 is not (a 31-day window would report 36).
+  const month = summarizeActivityScope(activity, "30d", anchor);
+  assert.equal(month.totalTokens, 31);
+  assert.equal(month.activeDays, 3);
+  assert.notEqual(month.totalTokens, 36);
+
+  // Oct 28 .. Nov 3.
+  const week = summarizeActivityScope(activity, "7d", anchor);
+  assert.equal(week.totalTokens, 20);
+  assert.equal(week.activeDays, 2);
+  assert.equal(week.avgPerDay, 20 / 7);
+  assert.equal(week.avgPerWeek, 20);
 });
 
 test("summarizeActivityScope recomputes the summary for a trailing window", () => {
@@ -205,11 +230,12 @@ test("summarizeActivityScope recomputes the summary for a trailing window", () =
   const activity = buildTokenActivity(series, { anchor });
 
   const all = summarizeActivityScope(activity, "all", anchor);
-  assert.equal(all.dayCount, activity.dayCount);
+  // Oct 1 .. Nov 2 is the observed span; the anchor day itself has no tokens.
+  assert.equal(all.dayCount, 33);
   assert.equal(all.totalTokens, 730);
   assert.equal(all.longestStreak, 2);
 
-  // Oct 5 .. Nov 3: only the two quiet November days fall inside the window.
+  // Oct 5 .. Nov 3: only the two late days (10 and 20 tokens) fall inside.
   const month = summarizeActivityScope(activity, "30d", anchor);
   assert.equal(month.dayCount, 30);
   assert.equal(month.totalTokens, 30);
@@ -222,6 +248,8 @@ test("summarizeActivityScope recomputes the summary for a trailing window", () =
   assert.equal(week.dayCount, 7);
   assert.equal(week.totalTokens, 30);
   assert.equal(week.avgPerDay, 30 / 7);
+  // One week of data means the weekly average is simply the window total.
+  assert.equal(week.avgPerWeek, week.totalTokens);
 });
 
 test("a trailing window before the first record averages over quiet days", () => {

@@ -8,7 +8,7 @@ const activityScopeLabelKeys: Record<ActivityScope, string> = {
 };
 
 const defaultContainerClassName = "flex shrink-0 items-center gap-0.5 rounded-full border border-border/50 bg-muted/40 p-0.5";
-const defaultItemClassName = "rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none transition-colors";
+const defaultItemClassName = "rounded-full px-2 py-1 text-[9px] font-semibold leading-none transition-colors";
 const defaultActiveItemClassName = "bg-foreground text-background shadow-sm";
 const defaultInactiveItemClassName = "text-muted-foreground hover:text-foreground";
 
@@ -31,14 +31,24 @@ export function ActivityScopeSwitch({
   translate: (key: string) => string;
   value: ActivityScope;
 }) {
+  const containerClassName = className ?? defaultContainerClassName;
+  const sharedItemClassName = itemClassName ?? defaultItemClassName;
+
   return (
-    <div aria-label={translate("Statistics window")} className={cn(className ?? defaultContainerClassName)} role="group">
+    <div aria-label={translate("Statistics window")} className={containerClassName} role="group">
       {ACTIVITY_SCOPES.map((scope) => {
         const active = scope === value;
+        const stateClassName = active
+          ? activeItemClassName === undefined
+            ? defaultActiveItemClassName
+            : activeItemClassName
+          : inactiveItemClassName === undefined
+            ? defaultInactiveItemClassName
+            : inactiveItemClassName;
         return (
           <button
             aria-pressed={active}
-            className={cn(itemClassName ?? defaultItemClassName, active ? activeItemClassName ?? defaultActiveItemClassName : inactiveItemClassName ?? defaultInactiveItemClassName)}
+            className={cn(sharedItemClassName, stateClassName)}
             data-active={active}
             key={scope}
             onClick={() => onChange(scope)}
