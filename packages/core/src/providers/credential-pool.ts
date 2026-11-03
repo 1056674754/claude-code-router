@@ -59,6 +59,13 @@ export function recordProviderCredentialOutcome(
     clearProviderCredentialCooldown(provider, credential);
     return;
   }
+  // Sticky pools (credentialFailover: false) must not cool credentials down —
+  // the pinned account stays pinned even when it 401/429s; the error surfaces
+  // to the client and switching is manual.
+  if (provider.credentialFailover === false) {
+    incrementProviderCredentialCounters(provider, credential, estimateLimitUsage(method, attempt.body ?? Buffer.alloc(0)));
+    return;
+  }
   if (statusCode === 401 || statusCode === 403 || statusCode === 429 || statusCode >= 500) {
     setProviderCredentialCooldown(provider, credential, providerCredentialCooldownMs, `HTTP ${statusCode}`);
   }

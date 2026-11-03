@@ -45,8 +45,11 @@ ZCode 导入会读取本机 ZCode 配置中的供应商 API Key、API 地址和�
 2. 模型优先来自 ZCode 本机配置；没有配置时会使用 ZCode 运行缓存或默认模型。
 3. CCR 会创建 API Key provider plugin，把 ZCode 本机配置中的 Key 用于请求认证。
 4. 如果 API 地址命中 CCR 内置预设，账号用量配置会复用对应预设。
+5. 模型会按 models.dev 的 GLM 套餐口径补上上下文窗口与最大输出（`GLM-5.3` / `GLM-5.3-Flash` 为 1M 上下文、131072 输出），不需要手工填写。
 
-如果只检测到 ZCode 登录态，但没有检测到可用供应商 API Key，导入入口会显示不可导入。此时需要先在 ZCode 中配置可用模型供应商，再回到 CCR 添加供应商。
+ZCode 3.1x 起把供应商配置拆成了 `v2/setting.json` 的供应商族选择、`v2/runtime/provider/**/zcode-builtin.json` 的内置规则，以及 `v2/credentials.json` 中 `enc:v1` 加密的账号凭据。CCR 会按当前登录套餐定位对应供应商，并用 ZCode 自身的密钥派生规则解密该凭据后导入，不需要手动抄写 API Key；旧版单个 `v2/config.json` 的供应商表仍然兼容。
+
+如果只检测到 ZCode 登录态，但本机凭据无法解密（例如 ZCode 曾用自定义的 `ZCODE_CREDENTIAL_SECRET` 启动），导入入口会显示不可导入。此时需要在与 ZCode 相同的环境下重新登录，再回到 CCR 添加供应商。
 
 ### Kimi CLI
 
@@ -173,6 +176,43 @@ OpenCode 导入会同时读取本机认证文件、OpenCode 配置和模型目�
 | 消息字段 | 账号提示信息路径。适合展示供应商返回的错误、套餐说明或风控提示。 |
 | 测试用量请求 | 立即请求用量接口并解析映射结果，方便在保存前验证字段路径。 |
 | 响应字段 | 测试后列出响应 JSON 中可选字段。点击 `余额剩余`、`余额总额`、`余额已用`、`订阅剩余`、`订阅上限`、`重置时间` 可以把该路径快速填入对应字段。 |
+
+### New API / one-api 中转站余额
+
+基于 New API 或 one-api 的中转站把额度分成两套：
+
+- `GET /api/usage/token/` 使用供应商 API Key 认证。当 Key 本身没有独立额度时，响应里是 `"unlimited_quota": true`，没有可展示的 Key 额度，CCR 会显示“API key has no dedicated quota limit”，而不是余额。
+- `GET /api/user/self` 使用网站账号而不是 API Key 认证：把控制台访问令牌放进 `Authorization: Bearer <令牌>`，再把数字用户 ID 放进 `New-Api-User`。访问令牌在中转站控制台的个人设置里生成。
+
+在用量设置里填写 `New API 访问令牌` 和 `New API 用户 ID`，然后点击 `插入 New API 用户余额`。CCR 会追加一个 `http-json` connector，读取 `$.data.quota` 并按 New API 默认的 500000 额度/美元换算。如果 connector 里还留着模板占位符，它会直接说明缺少哪个请求头，而不是把占位符发出去换回一个看不懂的 401。`测试连接器` 会测试所选的那一条 connector，验证账号侧时请选中刚追加的余额 connector。访问令牌以明文保存在 connector 的请求头里，请按密码对待。
+
+`余额总额 (USD)` 是可选的额度上限覆盖值。留空时 CCR 用「余额 + 已用」作为分母，百分比表示账号累计额度还剩多少；填了就按固定预算计算。两种情况下都是低于 20% 变黄、低于 5% 变红。
+
+```json
+{
+  "type": "http-json",
+  "endpoint": "https://relay.example/api/user/self",
+  "auth": "none",
+  "headers": {
+    "Authorization": "Bearer <访问令牌>",
+    "New-Api-User": "1121"
+  },
+  "parser": "new-api-user-self",
+  "mapping": {
+    "message": "$.message",
+    "meters": [
+      {
+        "id": "new_api_user_balance",
+        "kind": "balance",
+        "label": "User balance",
+        "remaining": "$.data.quota / 500000",
+        "used": "$.data.used_quota / 500000",
+        "unit": "USD"
+      }
+    ]
+  }
+}
+```
 
 ### 浏览器请求
 

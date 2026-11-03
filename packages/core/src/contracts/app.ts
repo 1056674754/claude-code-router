@@ -173,6 +173,11 @@ export type GatewayProviderConfig = {
   // gateway retries the SAME model id on these providers, in order. Bound to
   // the provider (the plan), not to any client slot or route rule.
   fallbackProviders?: string[];
+  // When false, the credential pool never rotates automatically: requests pin
+  // to the highest-priority credential, 401/429/5xx surface to the client, and
+  // switching accounts is a manual act (cache affinity — e.g. ChatGPT accounts
+  // share no prompt cache, so mid-pool rotation invalidates it). Default: true.
+  credentialFailover?: boolean;
   // Optional per-provider upstream concurrency cap: excess requests queue at
   // the gateway (abort-aware) instead of tripping upstream risk control.
   maxConcurrency?: number;
@@ -261,11 +266,99 @@ export function effectiveContextWindowPercentFor(metadata: ProviderModelMetadata
     : undefined;
 }
 
+export type ProviderCredentialCodexOauthConfig = {
+  accessToken?: string;
+  accountId?: string;
+  idToken?: string;
+  refreshToken?: string;
+  required?: boolean;
+  refreshIfMissingAccessToken?: boolean;
+};
+
+export type ClaudeSessionMessage = {
+  hasImage: boolean;
+  hasThinking: boolean;
+  model?: string;
+  role: string;
+  text: string;
+  timestamp?: string;
+  toolUses: Array<{ input: string; name: string }>;
+};
+
+export type ClaudeSessionSummary = {
+  file: string;
+  messageCount: number;
+  project: string;
+  sessionId: string;
+  sizeBytes: number;
+  startedAt?: string;
+  title: string;
+  updatedAt: string;
+};
+
+export type ClaudeSessionDetail = {
+  file: string;
+  messages: ClaudeSessionMessage[];
+  project: string;
+  sessionId: string;
+  sizeBytes: number;
+  title: string;
+  truncated: boolean;
+};
+
+export type ClaudeDirectUsageImportResult = {
+  eventsImported: number;
+  eventsSkippedExisting: number;
+  filesScanned: number;
+  tokensTotal: number;
+};
+
+export type ClaudeAccountRecord = {
+  configDir: string;
+  createdAt: string;
+  id: string;
+  label: string;
+};
+
+export type ClaudeAccountEntry = {
+  configDir: string;
+  createdAt: string;
+  id: string;
+  isLive: boolean;
+  label: string;
+  status: "live" | "missing-credentials" | "ready";
+};
+
+export type ClaudeAccountUsageResult = {
+  fetchedAt: string;
+  payload: unknown;
+  source: "account" | "live";
+};
+
+export type CcSwitchCodexAccountSummary = {
+  accountId: string;
+  email?: string;
+};
+
+export type CcSwitchCodexAccountsImportRequest = {
+  providerName?: string;
+};
+
+export type CcSwitchCodexAccountsImportResult = {
+  accounts: CcSwitchCodexAccountSummary[];
+  created: boolean;
+  importedAccounts: number;
+  providerName: string;
+};
+
 export type ProviderCredentialConfig = {
   account?: ProviderAccountConfig;
   api_key?: string;
   apiKey?: string;
   apikey?: string;
+  // ChatGPT (Codex) OAuth login bound to this credential; credentials carrying
+  // it join the credential pool like API-key credentials do.
+  codexOauth?: ProviderCredentialCodexOauthConfig;
   enabled?: boolean;
   id?: string;
   label?: string;
@@ -354,7 +447,8 @@ export type ProviderAccountLocalEstimateConnectorConfig = ProviderAccountConnect
 export type ProviderAccountLocalWindowConfig = {
   id: string;
   label: string;
-  limit: number;
+  // Omit for a pure usage meter (used only, no remaining/limit bar).
+  limit?: number;
   unit: "hours" | "tokens" | "requests";
   window: ProviderAccountMeterWindow;
 };
@@ -1476,7 +1570,6 @@ export const DEFAULT_OVERVIEW_WIDGETS: OverviewWidgetConfig[] = [
   { enabled: true, id: "metric-cache-ratio", metric: "cache-ratio", size: "1:1", type: "metric", variant: "card" },
   { enabled: true, id: "account-balance", size: "4:2", type: "account-balance", variant: "cards" },
   { enabled: true, id: "token-activity", size: "4:2", type: "token-activity", variant: "heatmap" },
-  { enabled: true, id: "token-mix", size: "1:2", type: "token-mix", variant: "bars" },
   { enabled: true, id: "client-analysis", size: "2:2", type: "client-analysis", variant: "table" },
   { enabled: true, id: "provider-analysis", size: "2:2", type: "provider-analysis", variant: "table" }
 ];
@@ -2375,8 +2468,6 @@ export type UsageSeriesPoint = UsageTotals & {
   label: string;
 };
 
-// One calendar day of token totals across the store's whole history; the
-// activity calendar lays every one of them out instead of a fixed week count.
 export type UsageDailyActivityPoint = {
   day: string;
   totalTokens: number;

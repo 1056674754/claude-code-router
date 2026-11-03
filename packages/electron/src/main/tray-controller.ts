@@ -8,7 +8,7 @@ import { getProviderAccountSnapshots } from "@ccr/core/providers/account-service
 import { getTodayUsageTotals, onUsageRecorded } from "@ccr/core/usage/store";
 import { getLiveTokenRateSnapshot, onLiveTokenRateChanged } from "@ccr/core/observability/stream-experience";
 import windowsManager from "./windows";
-import type { AppConfig, ProviderAccountMeter, TrayBalanceProgressConfig, TrayIconPreference } from "@ccr/core/contracts/app";
+import type { AppConfig, ProviderAccountMeter, ProviderAccountSnapshot, TrayBalanceProgressConfig, TrayIconPreference } from "@ccr/core/contracts/app";
 
 const popoverMenuWidth = 420;
 const popoverPreferredHeight = 740;
@@ -410,7 +410,12 @@ class TrayController {
     }
     try {
       const snapshots = await getProviderAccountSnapshots(this.trayBalanceProgress.provider);
-      const snapshot = snapshots.find((account) => account.provider === this.trayBalanceProgress?.provider) ?? snapshots[0];
+      // Multi-account providers expose one snapshot per credential; the progress
+      // icon follows the most severe account so it never hides a drained one.
+      const providerSnapshots = snapshots.filter((account) => account.provider === this.trayBalanceProgress?.provider);
+      const snapshot = (providerSnapshots.length > 0 ? providerSnapshots : snapshots)
+        .slice()
+        .sort((left, right) => providerAccountStatusSeverity(left.status) - providerAccountStatusSeverity(right.status))[0];
       const meter = snapshot?.meters.find((candidate) => candidate.id === this.trayBalanceProgress?.meterId);
       this.applyProgressTrayIcon(meter ? calculateTrayBalanceProgress(meter) : 0);
     } catch {
@@ -701,6 +706,21 @@ function calculateTrayBalanceProgress(meter: ProviderAccountMeter): number {
   }
   const rawValue = meter.remaining ?? meter.limit ?? meter.used ?? 0;
   return rawValue > 0 ? 1 : 0;
+}
+
+function providerAccountStatusSeverity(status: ProviderAccountSnapshot["status"] | undefined): number {
+  switch (status) {
+    case "error":
+      return 0;
+    case "critical":
+      return 1;
+    case "warning":
+      return 2;
+    case "ok":
+      return 3;
+    default:
+      return 4;
+  }
 }
 
 function createBalanceProgressBarPng(progress: number): Buffer {

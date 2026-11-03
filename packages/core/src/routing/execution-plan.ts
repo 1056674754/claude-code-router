@@ -3,6 +3,7 @@ import {
   type RouterFallbackConfig
 } from "@ccr/core/contracts/app";
 import type { RouteAttemptPlan, RouteExecutionPlan } from "@ccr/core/routing/contracts";
+import { circuitAllows } from "@ccr/core/providers/circuit-breaker";
 import { type ModelRegistry, normalizeRouteSelector, providerRuntimeId } from "@ccr/core/routing/model-registry";
 
 export function createRouteExecutionPlan(input: {
@@ -81,6 +82,12 @@ function expandProviderFallbackAttempts(
     }
     const fallbackId = providerRuntimeId(target.provider);
     if (seenProviders.has(fallbackId)) {
+      continue;
+    }
+    // Circuit breaker: a standby whose circuit is open is skipped for this
+    // plan; the primary routed provider is never gated. Half-open circuits
+    // admit their probe attempt.
+    if (!circuitAllows(fallbackId)) {
       continue;
     }
     seenProviders.add(fallbackId);

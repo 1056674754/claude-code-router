@@ -64,7 +64,15 @@ export function spawnGatewayProcess(
   const child = spawn(nodeRuntime.command, args, {
     cwd: CONFIGDIR,
     env,
-    serialization: "advanced",
+    // JSON, not "advanced": the child runtime is not always this process's own
+    // binary (CCR_NODE_BIN, or a system node picked for its native-module ABI),
+    // and V8's structured-clone wire format is version-coupled. A child whose
+    // V8 serializer differs (e.g. Electron 44 vs Electron 42) makes the parent
+    // throw "Unable to deserialize cloned data due to invalid or unsupported
+    // version" while reading the channel, which kills gateway startup and
+    // surfaces as the 30s config-acceptance timeout. The payload is plain JSON
+    // anyway — gateway-bootstrap re-serializes it into the virtual config file.
+    serialization: "json",
     stdio: ["ignore", "pipe", "pipe", "ipc"]
   });
   captureGatewayChildOutput(child);
@@ -429,17 +437,29 @@ export function publicGatewayAuthTokens(config: AppConfig, coreAuthToken: string
 }
 
 function resolveGatewayNodeRuntime(): GatewayNodeRuntime {
+  const parentRuntime = gatewayParentNodeRuntime();
+  const configuredCandidates = configuredGatewayNodeRuntimeCandidates();
   const candidates = uniqueGatewayNodeRuntimeCandidates([
-    ...configuredGatewayNodeRuntimeCandidates(),
-    ...systemGatewayNodeRuntimeCandidates(),
-    { command: process.execPath, electronRunAsNode: Boolean(process.versions.electron) }
+    ...configuredCandidates,
+    // This process's own binary is the only runtime guaranteed to share both
+    // the V8 IPC wire format and the native-module ABI, so prefer it over any
+    // system node that merely happens to be on PATH.
+    parentRuntime,
+    ...systemGatewayNodeRuntimeCandidates()
   ]);
   const nativeProbe = resolveGatewayNativeProbeModule();
   if (nativeProbe) {
     const compatible = candidates.find((candidate) => canLoadGatewayNativeProbe(candidate, nativeProbe));
     if (compatible) return compatible;
   }
-  return candidates[0] ?? { command: process.execPath, electronRunAsNode: Boolean(process.versions.electron) };
+  // Nothing could be verified to load the gateway's native dependencies. Stay
+  // on an explicit CCR_NODE_BIN if one was given, otherwise on our own binary:
+  // a system node we could not verify may not even speak IPC to us.
+  return configuredCandidates[0] ?? parentRuntime;
+}
+
+function gatewayParentNodeRuntime(): GatewayNodeRuntime {
+  return { command: process.execPath, electronRunAsNode: Boolean(process.versions.electron) };
 }
 
 function configuredGatewayNodeRuntimeCandidates(): GatewayNodeRuntime[] {

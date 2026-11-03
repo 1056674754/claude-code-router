@@ -397,6 +397,38 @@ test("AddProviderForm renders auto model refresh in advanced settings", () => {
   assert.match(html, /aria-checked="true"/);
 });
 
+test("New API usage settings ask for the console access token", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    accountConnectorsText: JSON.stringify(newApiKeyUsageAccountConfig("https://gateway.example/v1").connectors ?? [], null, 2),
+    accountEnabled: true,
+    accountMode: "raw" as const,
+    autoFetchModels: true,
+    baseUrl: "https://gateway.example/v1",
+    modelsText: "claude-sonnet-5-5",
+    name: "New API Relay",
+    selectedProtocols: ["openai_chat_completions" as const]
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(AddProviderForm, {
+      activeStep: "verify",
+      draft,
+      error: "",
+      mode: "edit",
+      onChange: () => undefined,
+      probeLoading: false,
+      providers: []
+    })
+  );
+
+  // The relay balance needs the console access token, not the provider API key.
+  assert.match(html, /New API access token/);
+  assert.match(html, /New API user ID/);
+  assert.match(html, /Balance total \(USD\)/);
+  assert.match(html, /generate access token/);
+  assert.match(html, /Show access token/);
+});
+
 test("edit provider dialog keeps advanced settings collapsed by default", () => {
   const draft = {
     ...createProviderDraft([]),
@@ -1623,7 +1655,7 @@ test("New API user balance template adds configurable user self connector", () =
   const text = providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
     JSON.stringify(account.connectors ?? [], null, 2),
     "https://gateway.example/v1",
-    "42"
+    { userId: "42" }
   );
   const connectors = JSON.parse(text);
 
@@ -1634,6 +1666,99 @@ test("New API user balance template adds configurable user self connector", () =
   assert.equal(connectors[1].headers.Authorization, "Bearer <new-api-access-token>");
   assert.equal(connectors[1].headers["New-Api-User"], "42");
   assert.equal(connectors[1].mapping.meters[0].id, "new_api_user_balance");
+  assert.equal(connectors[1].mapping.meters[0].limit, undefined);
+});
+
+test("New API user balance template keeps the console access token and scales quota to USD", () => {
+  const account = newApiKeyUsageAccountConfig("https://gateway.example/v1");
+  const text = providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+    JSON.stringify(account.connectors ?? [], null, 2),
+    "https://gateway.example/v1",
+    { accessToken: "console-access-token", userId: "1121" }
+  );
+  const connectors = JSON.parse(text);
+
+  assert.equal(connectors.length, 2);
+  assert.equal(connectors[1].headers.Authorization, "Bearer console-access-token");
+  assert.equal(connectors[1].headers["New-Api-User"], "1121");
+  assert.equal(connectors[1].mapping.meters[0].unit, "USD");
+  assert.equal(connectors[1].mapping.meters[0].remaining, "$.data.quota / 500000");
+  assert.equal(connectors[1].mapping.meters[0].used, "$.data.used_quota / 500000");
+
+  // Re-inserting replaces the previous connector instead of stacking duplicates.
+  const replaced = JSON.parse(providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+    text,
+    "https://gateway.example/v1",
+    { accessToken: "rotated-token", userId: "7" }
+  ));
+  assert.equal(replaced.length, 2);
+  assert.equal(replaced[1].headers.Authorization, "Bearer rotated-token");
+  assert.equal(replaced[1].headers["New-Api-User"], "7");
+});
+
+test("New API user balance template writes the optional budget as the meter limit", () => {
+  const account = newApiKeyUsageAccountConfig("https://gateway.example/v1");
+  const connectors = JSON.parse(providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+    JSON.stringify(account.connectors ?? [], null, 2),
+    "https://gateway.example/v1",
+    { accessToken: "console-access-token", limitUsd: 1000, userId: "1121" }
+  ));
+
+  assert.equal(connectors[1].mapping.meters[0].limit, 1000);
+  assert.equal(connectors[1].mapping.meters[0].remaining, "$.data.quota / 500000");
+
+  // A zero or blank budget must not create a 0 limit, which would report 100% used.
+  const blank = JSON.parse(providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+    "",
+    "https://gateway.example/v1",
+    { limitUsd: 0, userId: "1121" }
+  ));
+  assert.equal(blank[0].mapping.meters[0].limit, undefined);
+});
+
+test("provider list surfaces failed usage connectors next to the guidance message", () => {
+  const connectorMessage = "New API user balance connector is not configured yet: replace Authorization: Bearer <new-api-access-token> and New-Api-User: <user-id> with the relay access token.";
+  const html = renderToStaticMarkup(
+    React.createElement(ProvidersView, {
+      accountSnapshots: [
+        {
+          errors: [{ message: connectorMessage, source: "http-json" }],
+          message: "API key has no dedicated quota limit. Configure a New API user balance connector with an access token and New-Api-User to read account balance.",
+          meters: [],
+          nextRefreshAt: "2026-11-03T09:10:00.000Z",
+          provider: "kpzhu",
+          source: "merged",
+          status: "error",
+          updatedAt: "2026-11-03T09:05:00.000Z"
+        }
+      ],
+      addProvider: () => undefined,
+      editProvider: () => undefined,
+      notify: () => undefined,
+      providers: [
+        {
+          index: 0,
+          provider: {
+            account: { connectors: newApiKeyUsageAccountConfig("https://kpzhu.example/v1").connectors, enabled: true },
+            api_base_url: "https://kpzhu.example/v1",
+            api_key: "sk-kpzhu",
+            models: ["claude-sonnet-5-5"],
+            name: "kpzhu",
+            type: "openai_chat_completions"
+          }
+        }
+      ],
+      removeProvider: () => undefined,
+      setProviderEnabled: () => undefined
+    })
+  );
+
+  // The guidance sentence still wins the row, but the connector failure is no
+  // longer invisible: the count line carries the full message as its tooltip.
+  assert.match(html, /no dedicated quota limit/i);
+  assert.match(html, /1 usage connector\(s\) failed/);
+  assert.match(html, /not configured yet/i);
+  assert.match(html, /new-api-access-token/);
 });
 
 test("Zen and Go candidates use distinct local agent plugin suffixes", () => {

@@ -13,6 +13,7 @@ import {
   appLogoUrl, trayMascotIconUrls, arrayMove, defaultTrayWidgetVariant, isTraySingletonWidgetType, normalizeTrayWidget, normalizeTrayWidgets, Switch, Textarea, Trash2, trayWidgetVariantOptions, useAppText, useEffect, useMemo, useRef, useSensor, useSensors, useSortable, useState, validateMcpServerDraft,
   providerAccountSnapshotKey, providerAccountSnapshotLabel, uniqueStrings, X
 } from "../shared/index";
+import { ClaudeSettingsPage } from "./claude-settings";
 import { ModelSelector } from "./model-selector";
 
 const settingsPageContentWidthClassName = "mx-auto w-full max-w-[900px]";
@@ -114,7 +115,10 @@ export function AppSettingsDialog({
             />
           );
         }
-        if (activePage === "appearance") {
+        if (activePage === "claude") {
+        return <ClaudeSettingsPage />;
+      }
+      if (activePage === "appearance") {
           return (
             <AppearanceSettingsPage
               copy={copy}
@@ -222,6 +226,7 @@ function SettingsLayout({
               onChange={(event) => setActivePage(event.target.value as SettingsPageId)}
               options={[
                 { label: copy.settings.appearance, value: "appearance" },
+                { label: copy.settings.claude, value: "claude" },
                 { label: copy.settings.general, value: "general" },
                 { label: copy.settings.observability, value: "observability" },
                 { label: copy.settings.toolHub, value: "toolhub" },
@@ -237,6 +242,12 @@ function SettingsLayout({
               icon={Palette}
               label={copy.settings.appearance}
               onClick={() => setActivePage("appearance")}
+            />
+            <SettingsPageButton
+              active={visiblePage === "claude"}
+              icon={KeyRound}
+              label={copy.settings.claude}
+              onClick={() => setActivePage("claude")}
             />
             <SettingsPageButton
               active={visiblePage === "general"}

@@ -877,6 +877,20 @@ test("provider account meter values localize textual units", () => {
   assert.equal(value, `0 ${appCopy.zh.text.resets}`);
 });
 
+test("provider account money meters round to cents", () => {
+  // New API account balance arrives as quota / 500000; the raw quotient carries
+  // a long tail that should not leak into the row or the tray.
+  const value = formatProviderAccountMeterValue({
+    id: "new_api_user_balance",
+    kind: "balance",
+    label: "User balance",
+    remaining: 115468675 / 500000,
+    unit: "USD"
+  });
+
+  assert.equal(value, "$230.94");
+});
+
 test("provider account reset credit detail progress uses each validity window", () => {
   const effectiveAt = "2026-07-01T00:00:00.000Z";
   const expiresAt = "2026-07-11T00:00:00.000Z";

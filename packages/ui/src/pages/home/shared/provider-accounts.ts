@@ -1,4 +1,5 @@
 import type {
+  ProviderAccountConnectorError,
   ProviderAccountMeter,
   ProviderAccountSnapshot
 } from "@ccr/core/contracts/app";
@@ -16,6 +17,19 @@ export function compareProviderAccountSnapshots(a: ProviderAccountSnapshot, b: P
 
 export function providerAccountSnapshotKey(account: ProviderAccountSnapshot): string {
   return account.credentialId ? `${account.provider}::${account.credentialId}` : account.provider;
+}
+
+// Severity order surfaces failing accounts, but the account actually serving
+// requests stays first: it is the one the panel points at.
+export function orderProviderAccountSnapshots(snapshots: ProviderAccountSnapshot[], preferredCredentialId?: string): ProviderAccountSnapshot[] {
+  const sorted = [...snapshots].sort(compareProviderAccountSnapshots);
+  const preferredIndex = preferredCredentialId
+    ? sorted.findIndex((snapshot) => snapshot.credentialId === preferredCredentialId)
+    : -1;
+  if (preferredIndex <= 0) {
+    return sorted;
+  }
+  return [sorted[preferredIndex], ...sorted.slice(0, preferredIndex), ...sorted.slice(preferredIndex + 1)];
 }
 
 export function providerAccountSnapshotLabel(account: ProviderAccountSnapshot): string {
@@ -158,13 +172,13 @@ export function formatProviderAccountMeterValue(
   const unit = meter.unit.trim();
   const normalizedUnit = unit.toUpperCase();
   if (normalizedUnit === "USD") {
-    return `$${formatProviderAccountNumber(value)}`;
+    return `$${formatProviderAccountCurrency(value)}`;
   }
   if (normalizedUnit === "CNY") {
-    return `¥${formatProviderAccountNumber(value)}`;
+    return `¥${formatProviderAccountCurrency(value)}`;
   }
   if (normalizedUnit === "EUR") {
-    return `€${formatProviderAccountNumber(value)}`;
+    return `€${formatProviderAccountCurrency(value)}`;
   }
   if (unit === "%") {
     return `${formatProviderAccountNumber(value)}%`;
@@ -184,6 +198,38 @@ export function formatProviderAccountMeterValue(
 
 export function formatProviderAccountNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(value);
+}
+
+// Money meters arrive as raw provider quota scaled by the connector mapping
+// (New API divides by 500000), which leaves long fractional tails. Dime
+// precision keeps a balance readable without pretending more accuracy.
+export function formatProviderAccountCurrency(value: number): string {
+  return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
+// A failed connector is worth surfacing even when a sibling connector produced
+// a message: the message explains what is missing, the error explains what broke.
+export function providerAccountConnectorErrors(account: ProviderAccountSnapshot): ProviderAccountConnectorError[] {
+  const message = account.message?.trim();
+  const seen = new Set<string>();
+  return (account.errors ?? []).filter((error) => {
+    const text = error.message?.trim();
+    if (!text || text === message || seen.has(text)) {
+      return false;
+    }
+    seen.add(text);
+    return true;
+  });
+}
+
+export function providerAccountConnectorErrorDetail(account: ProviderAccountSnapshot): string | undefined {
+  const errors = providerAccountConnectorErrors(account);
+  if (errors.length === 0) {
+    return undefined;
+  }
+  return errors
+    .map((error) => (error.connectorId ? `${error.connectorId}: ${error.message}` : error.message))
+    .join("\n");
 }
 
 export function formatProviderAccountReset(value: string, translate: (value: string) => string = (item) => item): string {
@@ -217,4 +263,73 @@ export function formatProviderAccountMeterTitle(meter: ProviderAccountMeter, tra
 export function isProviderAccountManualResetMeter(meter: ProviderAccountMeter): boolean {
   const text = `${meter.id} ${meter.label} ${meter.window ?? ""}`.toLowerCase();
   return text.includes("manual_reset") || text.includes("manual reset") || text.includes("manual-reset");
+}
+
+// Legacy local-estimate meters count CCR's OWN traffic ("CCR tokens (30d)",
+// "CCR requests (30d)"). They describe router activity, not a provider account
+// quota, so account usage panels leave them out.
+export function isProviderAccountSelfUsageMeter(meter: ProviderAccountMeter): boolean {
+  const id = meter.id.trim().toLowerCase();
+  const label = meter.label.trim().toLowerCase();
+  return id.startsWith("codex_ccr_") ||
+    label.startsWith("ccr tokens") ||
+    label.startsWith("ccr requests");
+}
+
+// Usage fetches hit provider edge networks and fail transiently far more often
+// than they fail for a durable reason. The UI keeps the raw message as a
+// tooltip but shows a localized, actionable line and retries automatically.
+const retryableUsageFailurePatterns = [
+  "fetch failed",
+  "failed to fetch",
+  "networkerror",
+  "network error",
+  "socket hang up",
+  "econnreset",
+  "econnrefused",
+  "etimedout",
+  "eai_again",
+  "enotfound",
+  "und_err",
+  "timed out",
+  "timeout",
+  "aborted"
+];
+
+export function providerAccountFailureDetail(account: ProviderAccountSnapshot): string | undefined {
+  const detail = account.message?.trim() || account.errors?.[0]?.message?.trim();
+  return detail || undefined;
+}
+
+export function isRetryableProviderAccountFailure(account: ProviderAccountSnapshot): boolean {
+  if (account.status !== "error") {
+    return false;
+  }
+  const detail = providerAccountFailureDetail(account);
+  if (!detail) {
+    return false;
+  }
+  const lower = detail.toLowerCase();
+  return retryableUsageFailurePatterns.some((pattern) => lower.includes(pattern));
+}
+
+export function providerAccountFailureText(account: ProviderAccountSnapshot): string | undefined {
+  const detail = providerAccountFailureDetail(account);
+  if (!detail) {
+    return undefined;
+  }
+  return isRetryableProviderAccountFailure(account) ? "Usage request failed; retrying" : detail;
+}
+
+export function providerAccountStatusTooltip(account: ProviderAccountSnapshot): string {
+  if (account.status === "error") {
+    return "The usage request failed.";
+  }
+  if (account.status === "critical") {
+    return "Quota exhausted or the account is rate limited.";
+  }
+  if (account.status === "warning") {
+    return "Quota is nearly exhausted.";
+  }
+  return "Quota is healthy.";
 }

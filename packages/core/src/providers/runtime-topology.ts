@@ -5,6 +5,7 @@ import { isGatewayProviderEnabled } from "@ccr/core/contracts/app";
 import type { AppConfig, GatewayProviderCapability, GatewayProviderCapabilityProtocol, GatewayProviderConfig, GatewayProviderProtocol, ProviderCredentialConfig } from "@ccr/core/contracts/app";
 import { findProviderPresetByBaseUrl, providerApiKeySafetyIssue } from "@ccr/core/providers/presets/index";
 import { normalizeProviderBaseUrl as normalizeProviderBaseUrlInput } from "@ccr/core/providers/url";
+import { localAgentProviderApiKey } from "@ccr/core/agents/local-providers/shared";
 import { modelRegistryForConfig, parseProviderModelSelector, providerRuntimeId } from "@ccr/core/routing/model-registry";
 import { gatewayProviderProtocolFallbackOrder, type CoreGatewayProvider } from "@ccr/core/gateway/internal/shared";
 
@@ -99,8 +100,14 @@ export function activeProviderCredentials(provider: GatewayProviderConfig): Prov
   }
   return (provider.credentials ?? []).filter((credential) =>
     credential.enabled !== false &&
-    Boolean(providerCredentialApiKey(credential))
+    (Boolean(providerCredentialApiKey(credential)) || providerCredentialHasCodexOauth(credential))
   );
+}
+
+// ChatGPT (Codex) OAuth credentials join the pool without a static API key.
+export function providerCredentialHasCodexOauth(credential: ProviderCredentialConfig): boolean {
+  const codexOauth = credential.codexOauth;
+  return Boolean(codexOauth && (codexOauth.refreshToken || codexOauth.accessToken));
 }
 
 export function providerCredentialPriority(credential: ProviderCredentialConfig, index: number): number {
@@ -147,7 +154,11 @@ function toCoreGatewayProvider(
     normalizeProviderProtocol(provider.provider) ??
     inferProtocol(provider);
   const baseurl = normalizeProviderRuntimeBaseUrl(capability?.baseUrl ?? readBaseUrl(provider), type);
-  const apikey = credential ? providerCredentialApiKey(credential) : provider.apikey || provider.apiKey || provider.api_key;
+  // OAuth credentials authenticate via their codexOauth plugin; the sentinel key
+  // mirrors what local-agent imports use for ChatGPT-login providers.
+  const apikey = credential
+    ? providerCredentialApiKey(credential) || (providerCredentialHasCodexOauth(credential) ? localAgentProviderApiKey : undefined)
+    : provider.apikey || provider.apiKey || provider.api_key;
 
   if (!provider.name || provider.models.length === 0) {
     return undefined;

@@ -16,6 +16,7 @@ import { codexDefaultBaseUrl, readCodexAuth } from "@ccr/core/agents/local-provi
 import { opencodeCatalogProtocolModelMap } from "@ccr/core/agents/local-providers/opencode";
 import { localAgentProviderApiKey } from "@ccr/core/agents/local-providers/shared";
 import { readClaudeCodeOauth } from "@ccr/core/agents/local-providers/service";
+import { upsertCodexStoredAccount } from "@ccr/core/providers/codex-account-store";
 import { isLocalClaudeCodeOauthProviderPlugin, mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
 import { findProviderPresetByBaseUrl, providerApiKeySafetyIssue } from "@ccr/core/providers/presets/index";
 import { getProviderCatalogModels } from "@ccr/core/providers/model-catalog";
@@ -936,7 +937,7 @@ async function providerProbeAuthRequest(
     codexOauth ??= liveCodexAuth?.codexOauth;
   }
   requestTransform ??= liveCodexAuth?.request;
-  if (codexOauth && apiKey === localAgentProviderApiKey && isCodexProbeEndpoint(url)) {
+  if (codexOauth && isCodexProbeEndpoint(url)) {
     requestTransform = withCodexProbeBackendRequestTransform(requestTransform);
   }
   let request = { init, url };
@@ -1379,6 +1380,16 @@ async function refreshCodexProbeAccessTokenUncached(
       expiresAtMs: codexTokenExpiresAtMs(accessToken) ?? now + 30 * 60 * 1000,
       refreshToken: readString(payload.refresh_token) || readString(payload.refreshToken) || refreshToken
     };
+    // Persist the rotation for account-bound credentials: the probe is a third
+    // refresh point (engine memory, probe memory, CCR store) and an unpersisted
+    // rotation would leave the store's refresh token stale.
+    if (result.accountId) {
+      upsertCodexStoredAccount({
+        accountId: result.accountId,
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken
+      });
+    }
     codexProbeOauthCache.set([
       tokenEndpoint,
       clientId,

@@ -34,6 +34,9 @@ import { getProviderAccountSnapshots, invalidateProviderAccountSnapshotCache, re
 import { detectProviderIcon } from "@ccr/core/providers/icons";
 import { fetchProviderManifest } from "@ccr/core/providers/manifest-service";
 import { getLocalAgentProviderCandidates, importLocalAgentProvider, probeLocalAgentProvider } from "@ccr/core/agents/local-providers/service";
+import { importClaudeDirectUsage } from "@ccr/core/usage/claude-direct-import";
+import { deleteClaudeSession, listClaudeSessions, readClaudeSession } from "@ccr/core/agents/claude-code/session-reader";
+import { captureClaudeAccount, getClaudeAccountUsage, listClaudeAccounts, removeClaudeAccount, switchClaudeAccount } from "@ccr/core/agents/claude-code/account-center";
 import { isLaunchAtLoginSupported, syncLaunchAtLogin } from "./launch-at-login";
 import { getProviderCatalogModels } from "@ccr/core/providers/model-catalog";
 import { getOpenRouterProviderCatalog } from "@ccr/core/providers/openrouter-provider-catalog";
@@ -149,6 +152,24 @@ ipcMain.handle(IPC_CHANNELS.appGetTraySnapshot, async (_event, provider?: string
 });
 ipcMain.handle(IPC_CHANNELS.appFetchProviderManifest, (_event, request: ProviderManifestFetchRequest) => fetchProviderManifest(request));
 ipcMain.handle(IPC_CHANNELS.appImportLocalAgentProvider, (_event, request: LocalAgentProviderImportRequest) => importLocalAgentProvider(request));
+ipcMain.handle(IPC_CHANNELS.appImportClaudeDirectUsage, () => importClaudeDirectUsage());
+ipcMain.handle(IPC_CHANNELS.appListClaudeSessions, () => listClaudeSessions());
+ipcMain.handle(IPC_CHANNELS.appGetClaudeSession, (_event, request: { file?: string }) => readClaudeSession(request?.file ?? ""));
+ipcMain.handle(IPC_CHANNELS.appDeleteClaudeSession, (_event, request: { file?: string }) => {
+  deleteClaudeSession(request?.file ?? "");
+  return { deleted: true };
+});
+ipcMain.handle(IPC_CHANNELS.appListClaudeAccounts, () => listClaudeAccounts());
+ipcMain.handle(IPC_CHANNELS.appCaptureClaudeAccount, (_event, request: { label?: string }) => captureClaudeAccount(request?.label ?? ""));
+ipcMain.handle(IPC_CHANNELS.appSwitchClaudeAccount, (_event, request: { id?: string }) => {
+  switchClaudeAccount(request?.id ?? "");
+  return { switched: true };
+});
+ipcMain.handle(IPC_CHANNELS.appRemoveClaudeAccount, (_event, request: { id?: string }) => {
+  removeClaudeAccount(request?.id ?? "");
+  return { removed: true };
+});
+ipcMain.handle(IPC_CHANNELS.appGetClaudeAccountUsage, (_event, request: { accountId?: string }) => getClaudeAccountUsage(request?.accountId));
 ipcMain.handle(IPC_CHANNELS.appProbeLocalAgentProvider, (_event, request) => probeLocalAgentProvider(request));
 ipcMain.handle(IPC_CHANNELS.appInstallProxyCertificate, () => proxyService.installCertificate());
 ipcMain.handle(IPC_CHANNELS.appListMcpServerTools, async (_event, serverName: string) => {

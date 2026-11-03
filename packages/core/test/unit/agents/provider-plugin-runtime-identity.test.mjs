@@ -96,8 +96,11 @@ test("Codex OAuth plugins retain the default base URL after runtime identity nor
   assert.equal(compiled.providers[0].baseurl, codexDefaultBaseUrl);
 });
 
-test("Codex OAuth plugins prefer live login credentials over imported snapshots", async (t) => {
+// Account-bound plugins own their identity: a live login belonging to a
+// DIFFERENT account must not stomp the imported tokens (multi-account pool).
+test("Codex OAuth plugins keep imported tokens when the live login belongs to another account", async (t) => {
   const home = useTemporaryCodexHome(t, "ccr-codex-runtime-live-credentials-");
+  useDeadTokenEndpoint(t);
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({
     tokens: {
@@ -134,10 +137,70 @@ test("Codex OAuth plugins prefer live login credentials over imported snapshots"
   );
   const codexPlugin = compiled.providerPlugins.find((item) => item.key === "ccr-local-agent-codex-api-codex-oauth");
 
+  assert.equal(codexPlugin.codexOauth.accessToken, "access-imported");
+  assert.equal(codexPlugin.codexOauth.refreshToken, "refresh-imported");
+  assert.equal(codexPlugin.codexOauth.accountId, "acct-imported");
+});
+
+// An unbound-imported plugin (or one bound to the SAME account) still follows
+// the live ~/.codex/auth.json login, which the Codex CLI/App refreshes.
+test("Codex OAuth plugins follow the live login when it belongs to the same account", async (t) => {
+  const home = useTemporaryCodexHome(t, "ccr-codex-runtime-same-account-live-credentials-");
+  useDeadTokenEndpoint(t);
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({
+    tokens: {
+      access_token: "access-live",
+      account_id: "acct-live",
+      refresh_token: "refresh-live"
+    }
+  }));
+
+  const config = createDefaultAppConfig();
+  config.providerPlugins = [{
+    codexOauth: {
+      accessToken: "access-imported",
+      accountId: "acct-live",
+      refreshToken: "refresh-imported"
+    },
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    providerName: "Codex API"
+  }];
+  config.Providers = [{
+    api_base_url: codexDefaultBaseUrl,
+    api_key: "ccr-local-agent-login",
+    id: "codex-api",
+    models: ["gpt-5.5"],
+    name: "Codex API",
+    type: "openai_responses"
+  }];
+
+  const compiled = await compileCoreGatewayConfig(
+    config,
+    "raw-trace-token",
+    "billing-usage-token",
+    "core-auth-token"
+  );
+  const codexPlugin = compiled.providerPlugins.find((item) => item.key === "ccr-local-agent-codex-api-codex-oauth");
+
   assert.equal(codexPlugin.codexOauth.accessToken, "access-live");
   assert.equal(codexPlugin.codexOauth.refreshToken, "refresh-live");
   assert.equal(codexPlugin.codexOauth.accountId, "acct-live");
 });
+
+// Keeps the compile-time token resolution offline: a bound plugin without a
+// store entry fails its refresh instantly and falls back (never hits OpenAI).
+function useDeadTokenEndpoint(t) {
+  const previous = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE;
+  process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE = "http://127.0.0.1:9/oauth/token";
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE;
+    } else {
+      process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE = previous;
+    }
+  });
+}
 
 test("Codex local providers synthesize OAuth plugins when persisted plugins are missing", async (t) => {
   const home = useTemporaryCodexHome(t, "ccr-codex-runtime-missing-plugins-");

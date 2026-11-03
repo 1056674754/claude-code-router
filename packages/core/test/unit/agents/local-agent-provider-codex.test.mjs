@@ -80,6 +80,70 @@ test("Codex local provider account config upgrades persisted usage mapping", () 
   assert.ok(upgradedManualResetMeter.remaining.includes("$.rate_limit_reset_credits.available_count"));
 });
 
+test("Codex multi-account OAuth provider needs no provider key to normalize", () => {
+  const account = JSON.parse(JSON.stringify(codexProviderAccountConfig()));
+  account.refreshIntervalMs = 60000;
+  account.connectors.push({
+    id: "codex-ccr-usage",
+    type: "local-estimate",
+    windows: [
+      { id: "codex_ccr_tokens_30d", label: "CCR tokens (30d)", unit: "tokens", window: "monthly" },
+      { id: "codex_ccr_requests_30d", label: "CCR requests (30d)", unit: "requests", window: "monthly" }
+    ]
+  });
+
+  const provider = normalizeCodexProviderAccountConfig({
+    account,
+    api_base_url: codexDefaultBaseUrl,
+    credentials: [
+      { codexOauth: { accountId: "acct-1", refreshToken: "refresh-1" }, id: "codex-acct-1" }
+    ],
+    models: ["gpt-5-codex"],
+    name: "Codex ChatGPT",
+    protocol: "openai_responses"
+  });
+
+  // A ChatGPT account pool is pinned: switching accounts stays a manual act.
+  assert.equal(provider.credentialFailover, false);
+  // Legacy CCR self-usage windows are diagnostics, not ChatGPT quota: dropped.
+  assert.equal(provider.account.connectors.some((connector) => connector.id === "codex-ccr-usage"), false);
+  assert.equal(provider.account.refreshIntervalMs, 60000);
+});
+
+test("Codex OAuth provider keeps custom account connectors but still pins the pool", () => {
+  const customAccount = {
+    connectors: [
+      {
+        auth: "none",
+        endpoint: "https://example.com/account",
+        mapping: { meters: [{ id: "custom", kind: "balance", label: "Custom", remaining: "$.balance", unit: "credits" }] },
+        type: "http-json"
+      },
+      {
+        id: "codex-ccr-usage",
+        type: "local-estimate",
+        windows: [{ id: "codex_ccr_tokens_30d", label: "CCR tokens (30d)", unit: "tokens", window: "monthly" }]
+      }
+    ],
+    enabled: true
+  };
+
+  const provider = normalizeCodexProviderAccountConfig({
+    account: customAccount,
+    api_base_url: codexDefaultBaseUrl,
+    credentials: [
+      { codexOauth: { accessToken: "access-1" }, id: "codex-acct-1" }
+    ],
+    models: ["gpt-5-codex"],
+    name: "Codex ChatGPT",
+    protocol: "openai_responses"
+  });
+
+  assert.equal(provider.credentialFailover, false);
+  assert.deepEqual(provider.account.connectors.map((connector) => connector.id), [undefined]);
+  assert.equal(provider.account.connectors[0].endpoint, "https://example.com/account");
+});
+
 test("Codex local provider config preserves imported GPT-5 context metadata", () => {
   const provider = normalizeCodexProviderAccountConfig({
     api_base_url: codexDefaultBaseUrl,

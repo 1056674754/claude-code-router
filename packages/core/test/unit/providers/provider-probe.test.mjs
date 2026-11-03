@@ -8,7 +8,7 @@ import {
   newApiKeyUsageMetersForTest,
   newApiUserSelfMetersForTest
 } from "@ccr/core/providers/account-service.ts";
-import { detectedProviderFromHeaders, newApiKeyUsageAccountConfig, newApiUserSelfConnectorConfig } from "@ccr/core/providers/new-api.ts";
+import { detectedProviderFromHeaders, newApiKeyUsageAccountConfig, newApiUserSelfConnectorConfig, newApiUserSelfConnectorPlaceholderIssue } from "@ccr/core/providers/new-api.ts";
 import {
   checkGatewayProviderConnectivity,
   isProviderProtocolEndpointSupportedForProbe,
@@ -849,6 +849,28 @@ test("New API response headers enable key quota account connector", () => {
   assert.equal(userBalanceConnector.endpoint, "https://gateway.example/api/user/self");
   assert.equal(userBalanceConnector.parser, "new-api-user-self");
   assert.equal(userBalanceConnector.headers?.["New-Api-User"], "<user-id>");
+  assert.equal(userBalanceConnector.headers?.Authorization, "Bearer <new-api-access-token>");
+  assert.equal(userBalanceConnector.mapping.meters[0]?.kind, "balance");
+  assert.equal(userBalanceConnector.mapping.meters[0]?.unit, "USD");
+  assert.equal(userBalanceConnector.mapping.meters[0]?.remaining, "$.data.quota / 500000");
+  assert.equal(userBalanceConnector.mapping.meters[0]?.used, "$.data.used_quota / 500000");
+  assert.match(newApiUserSelfConnectorPlaceholderIssue(userBalanceConnector) ?? "", /not configured yet/i);
+
+  const configuredConnector = newApiUserSelfConnectorConfig("https://gateway.example/v1", {
+    accessToken: "console-access-token",
+    userId: "1121"
+  });
+  assert.equal(configuredConnector.headers?.Authorization, "Bearer console-access-token");
+  assert.equal(configuredConnector.headers?.["New-Api-User"], "1121");
+  assert.equal(newApiUserSelfConnectorPlaceholderIssue(configuredConnector), undefined);
+
+  // A site that does not use the 500000 default gets its own divisor.
+  const scaledConnector = newApiUserSelfConnectorConfig("https://gateway.example/v1", {
+    accessToken: "console-access-token",
+    quotaPerUnit: 1000,
+    userId: "7"
+  });
+  assert.equal(scaledConnector.mapping.meters[0]?.remaining, "$.data.quota / 1000");
 });
 
 test("New API key usage parser ignores keys without a dedicated quota", () => {

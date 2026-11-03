@@ -12,6 +12,7 @@ import { resolveConfiguredProviderModelSelector, resolveUniqueConfiguredProvider
 import { estimateLimitUsage } from "@ccr/core/gateway/limits/window-limiter";
 import { isContentPolicyRejection, isContentPolicyStatus, readFailedAttemptBody } from "@ccr/core/gateway/upstream/content-policy";
 import { providerCredentialLimitState, readProviderCredentialCooldown, recordProviderCredentialOutcome } from "@ccr/core/providers/credential-pool";
+import { recordCircuitFailure, recordCircuitSuccess } from "@ccr/core/providers/circuit-breaker";
 import { clampNumber } from "@ccr/core/gateway/internal/collections";
 import { isRecord, stringValue } from "@ccr/core/gateway/internal/value";
 import { isLocalClaudeCodeOauthProviderPlugin, mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
@@ -538,6 +539,7 @@ export async function fetchUpstreamWithFallback(input: {
           statusCode: response.status
         });
         recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+        recordCircuitFailure(attemptProvider);
         // Failed response bodies may never finish. Start cancellation without
         // waiting for upstream cleanup before trying the next provider.
         void cancelResponseBody(response);
@@ -585,6 +587,7 @@ export async function fetchUpstreamWithFallback(input: {
             statusCode: response.status
           });
           recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+        recordCircuitFailure(attemptProvider);
           if (delayMs > 0) {
             await delay(delayMs, input.signal);
           }
@@ -635,6 +638,7 @@ export async function fetchUpstreamWithFallback(input: {
               statusCode: response.status
             });
             recordProviderCredentialOutcome(input.config, input.method, attempt, response.status, response.headers);
+        recordCircuitFailure(attemptProvider);
             await drainResponseBody(response);
             attempts.push({ ...plannedAttempt });
             if (waitMs > 0) {
@@ -660,6 +664,9 @@ export async function fetchUpstreamWithFallback(input: {
         }
       });
 
+      if (response.ok) {
+        recordCircuitSuccess(attemptProvider);
+      }
       return {
         attempt,
         failedAttempts,
@@ -697,6 +704,7 @@ export async function fetchUpstreamWithFallback(input: {
         error: message,
         model: attempt.model
       });
+      recordCircuitFailure(attemptProvider);
       if (input.signal?.aborted) {
         throw new UpstreamRequestError(abortSignalMessage(input.signal), {
           attempt,
@@ -1303,6 +1311,17 @@ function selectProviderCredentials(
       weight: Math.max(1, credential.weight ?? 1)
     };
   });
+  // Sticky pool (credentialFailover: false): never rotate accounts — pin to
+  // the highest-priority credential regardless of cooldown/limits, so the
+  // credential chain carries a single entry and retries cannot switch accounts
+  // (cache affinity; switching is the user's manual "Use" action).
+  if (provider.credentialFailover === false) {
+    const pinned = [...candidates].sort((left, right) => left.priority - right.priority || left.index - right.index)[0];
+    return {
+      credentials: pinned ? [{ credential: pinned.credential, credentialId: pinned.credentialId, internalName: pinned.internalName }] : [],
+      saturated: false
+    };
+  }
   const available = candidates.filter((candidate) => !candidate.cooldown && !candidate.limitState.blocked);
   const sorted = sortProviderCredentialCandidates(available.length > 0 ? available : candidates);
   return {

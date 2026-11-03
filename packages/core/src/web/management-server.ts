@@ -30,6 +30,9 @@ import {
 import { detectProviderIcon } from "@ccr/core/providers/icons";
 import { fetchProviderManifest } from "@ccr/core/providers/manifest-service";
 import { getLocalAgentProviderCandidates, importLocalAgentProvider, probeLocalAgentProvider } from "@ccr/core/agents/local-providers/service";
+import { importClaudeDirectUsage } from "@ccr/core/usage/claude-direct-import";
+import { deleteClaudeSession, listClaudeSessions, readClaudeSession } from "@ccr/core/agents/claude-code/session-reader";
+import { captureClaudeAccount, getClaudeAccountUsage, listClaudeAccounts, removeClaudeAccount, switchClaudeAccount } from "@ccr/core/agents/claude-code/account-center";
 import { getProviderCatalogModels } from "@ccr/core/providers/model-catalog";
 import { getOpenRouterProviderCatalog } from "@ccr/core/providers/openrouter-provider-catalog";
 import { getProviderPresets } from "@ccr/core/providers/presets/index";
@@ -342,9 +345,27 @@ const rpcHandlers: Record<string, RpcHandler> = {
   getRequestLogBodyChunk: (request) => getRequestLogBodyChunk(request as RequestLogBodyChunkRequest),
   getRequestLogs: (filter) => getRequestLogs(filter as RequestLogListFilter | undefined),
   getUpdateStatus: () => unsupportedUpdateStatus,
-  getUsageDailyActivity: () => getUsageDailyActivity(),
   getUsageStats: (range, filter) => getUsageStats(range as UsageStatsRange | undefined, filter as UsageStatsFilter | undefined),
+  getUsageDailyActivity: () => getUsageDailyActivity(),
   importLocalAgentProvider: (request) => importLocalAgentProvider(request as LocalAgentProviderImportRequest),
+  importClaudeDirectUsage: () => importClaudeDirectUsage(),
+  listClaudeSessions: () => listClaudeSessions(),
+  getClaudeSession: (request) => readClaudeSession((request as { file?: string }).file ?? ""),
+  deleteClaudeSession: (request) => {
+    deleteClaudeSession((request as { file?: string }).file ?? "");
+    return { deleted: true };
+  },
+  listClaudeAccounts: () => listClaudeAccounts(),
+  captureClaudeAccount: (request) => captureClaudeAccount((request as { label?: string }).label ?? ""),
+  switchClaudeAccount: (request) => {
+    switchClaudeAccount((request as { id?: string }).id ?? "");
+    return { switched: true };
+  },
+  removeClaudeAccount: (request) => {
+    removeClaudeAccount((request as { id?: string }).id ?? "");
+    return { removed: true };
+  },
+  getClaudeAccountUsage: (request) => getClaudeAccountUsage((request as { accountId?: string }).accountId),
   installProxyCertificate: () => proxyService.installCertificate(),
   listMcpServerTools: async (serverName) => {
     const name = typeof serverName === "string" ? serverName.trim() : "";

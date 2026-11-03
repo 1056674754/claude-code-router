@@ -26,6 +26,8 @@ import {
   probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
   profileOpenCommandFallback, profileOpenSurfaces, ProviderAccountSnapshot, providerApiKeySafetyIssue, ProviderConnectivityCheckReport, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerIdentitySafetyIssue, providerProbeCandidates,
   providerAutoFetchKnownModelsForSave, providerBaseUrl, providerCapabilitiesForProtocols, providerCapabilitiesForSave, providerConnectivityApiKeyFromDraft, providerConnectivityProviderPlugins, providerGlobalBaseUrlForProbe, providerManualFieldsForSave, providerProbeCandidatesApiKeySafetyIssue, providerProbeHasSupportedProtocol, providerProbeInputKey, providerProtocolOptions, providerSelectableProtocolsFromProbe, ProxyNetworkSnapshot,
+  providerCredentialRuntimeIdForUi,
+  isRetryableProviderAccountFailure,
   sortProviderCredentialsForUi,
   ProxyStatus, readLanguagePreference, RequestLogListFilter, RequestLogPage, ResolvedLanguage,
   ResolvedTheme, resolvePluginInstallPlan, resolveProviderDeepLinkCatalogModels, removeLocalAgentProviderPluginsForProvider, RouterRule, routingRuleFromDraft, SettingsPageId,
@@ -562,6 +564,54 @@ function App() {
       stopPolling();
     };
   }, [draftConfig.Providers]);
+
+  // A usage fetch hits provider edge networks and fails transiently more often
+  // than not. Retry the affected providers after a short pause (twice at most)
+  // so a single failed request does not leave "fetch failed" on screen for a
+  // whole poll interval; the 30s poller takes over afterwards.
+  const retryableSnapshotProviderKey = useMemo(
+    () => [...new Set(providerAccountSnapshots.filter(isRetryableProviderAccountFailure).map((snapshot) => snapshot.provider))].sort().join("|"),
+    [providerAccountSnapshots]
+  );
+  useEffect(() => {
+    if (!window.ccr || !retryableSnapshotProviderKey) {
+      return;
+    }
+    const providers = retryableSnapshotProviderKey.split("|").filter(Boolean);
+    let cancelled = false;
+    let attempts = 0;
+    let retryTimer: number | undefined;
+    const retry = async () => {
+      attempts += 1;
+      const results = await Promise.all(
+        providers.map((providerName) =>
+          window.ccr!.getProviderAccountSnapshots(providerName, { forceRefresh: true }).catch(() => undefined)
+        )
+      );
+      if (cancelled) {
+        return;
+      }
+      const fresh = results.flatMap((snapshots) => snapshots ?? []);
+      if (fresh.length > 0) {
+        setProviderAccountSnapshots((current) => [
+          ...current.filter((snapshot) =>
+            !providers.some((providerName) => snapshot.provider.trim().toLowerCase() === providerName.trim().toLowerCase())
+          ),
+          ...fresh
+        ]);
+      }
+      if (attempts < 2 && fresh.some(isRetryableProviderAccountFailure)) {
+        retryTimer = window.setTimeout(() => void retry(), 8000);
+      }
+    };
+    retryTimer = window.setTimeout(() => void retry(), 8000);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [retryableSnapshotProviderKey]);
 
   async function refreshProviderAccountsNow() {
     if (providerAccountRefreshing) {
@@ -2003,11 +2053,11 @@ function App() {
         return config;
       }
       const sorted = sortProviderCredentialsForUi(provider.credentials);
-      if (sorted[0]?.id === credentialId || sorted.length < 2) {
+      if (sorted.length < 2) {
         return config;
       }
-      const target = sorted.find((credential) => credential.id === credentialId);
-      if (!target) {
+      const target = sorted.find((credential) => providerCredentialRuntimeIdForUi(provider, credential) === credentialId);
+      if (!target || target === sorted[0]) {
         return config;
       }
       const reordered = [target, ...sorted.filter((credential) => credential !== target)]

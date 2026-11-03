@@ -1,5 +1,6 @@
 import {
-  accountMetersForDisplay, accountProgressClass, accountProgressColor, accountSnapshotKey, accountSnapshotLabel, compareAccountSnapshots, formatAccountMeterTitle, formatAccountMeterValue,
+  accountManualResetMeter, accountMetersForDisplay, accountProgressClass, accountProgressColor, accountSnapshotKey, accountSnapshotLabel, compareAccountSnapshots,
+  formatAccountMeterTitle, formatAccountMeterValue, translateAccountMeterLabel,
   LoaderCircle, meterProgress, meterRemainingRatio, meterValidityProgress, ProviderAccountMeter, ProviderAccountSnapshot, RefreshCw, TrayComponentVariants,
   useTrayText
 } from "../shared";
@@ -28,28 +29,34 @@ export function AccountSummaryPanel({
   const title = selectedSnapshots.length === 1
     ? accountSnapshotLabel(selectedSnapshots[0])
     : t("Account");
+  // A single account has no per-account label row, so its reset count rides on
+  // the panel title next to the refresh action instead.
+  const singleResetMeter = selectedSnapshots.length === 1 ? accountManualResetMeter(selectedSnapshots[0]) : undefined;
 
   return (
     <div className="tray-panel p-2.5">
       <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="truncate text-[11px] font-bold text-slate-100">{title}</h3>
+          <h3 className="truncate text-[11px] font-bold text-slate-100" title={title}>{title}</h3>
           {selectedSnapshots.length > 1 ? (
             <div className="mt-0.5 truncate text-[9px] font-medium text-slate-400">{selectedSnapshots.length} {t("accounts selected")}</div>
           ) : null}
         </div>
-        <button
-          aria-label={t("Refresh")}
-          className={`inline-flex h-5 w-5 shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent p-0 shadow-none transition-colors hover:bg-white/[.07] disabled:cursor-not-allowed disabled:opacity-50 ${accountStatusButtonClass(highestAccountStatus(selectedSnapshots))}`}
-          disabled={refreshing || !onRefresh}
-          onClick={() => {
-            void onRefresh?.();
-          }}
-          title={t("Refresh")}
-          type="button"
-        >
-          {refreshing ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {singleResetMeter ? <AccountResetCredit meter={singleResetMeter} /> : null}
+          <button
+            aria-label={t("Refresh")}
+            className={`inline-flex h-5 w-5 shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent p-0 shadow-none transition-colors hover:bg-white/[.07] disabled:cursor-not-allowed disabled:opacity-50 ${accountStatusButtonClass(highestAccountStatus(selectedSnapshots))}`}
+            disabled={refreshing || !onRefresh}
+            onClick={() => {
+              void onRefresh?.();
+            }}
+            title={t("Refresh")}
+            type="button"
+          >
+            {refreshing ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          </button>
+        </div>
       </div>
       <div className={selectedSnapshots.length > 1 ? "space-y-2" : ""}>
         {selectedSnapshots.map((snapshot) => (
@@ -90,17 +97,37 @@ function AccountSnapshotBlock({
   variant: TrayComponentVariants["account"];
 }) {
   const t = useTrayText();
+  const resetMeter = accountManualResetMeter(snapshot);
   const meters = accountMetersForDisplay(snapshot, variant === "stacked" ? 3 : 2);
 
   return (
     <div className={showLabel ? "border-t border-white/10 pt-2 first:border-t-0 first:pt-0" : undefined}>
-      {showLabel ? <div className="mb-1.5 truncate text-[10px] font-semibold text-slate-100">{accountSnapshotLabel(snapshot)}</div> : null}
+      {showLabel ? (
+        <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+          <div className="min-w-0 truncate text-[10px] font-semibold text-slate-100">{accountSnapshotLabel(snapshot)}</div>
+          {resetMeter ? <AccountResetCredit meter={resetMeter} /> : null}
+        </div>
+      ) : null}
       {meters.length > 0 ? (
         <AccountMeters meters={meters} status={snapshot.status} variant={variant} />
-      ) : (
+      ) : resetMeter ? null : (
         <div className="truncate text-[10px] font-medium text-slate-400">{t(snapshot.message || snapshot.errors?.[0]?.message || "Unavailable")}</div>
       )}
     </div>
+  );
+}
+
+// A reset credit has no quota denominator, so it gets no bar: the count rides
+// on the account row where it belongs, and the expiry window stays a tooltip.
+function AccountResetCredit({ meter }: { meter: ProviderAccountMeter }) {
+  const t = useTrayText();
+  return (
+    <span
+      className="shrink-0 whitespace-nowrap rounded-full bg-white/[.07] px-1.5 py-[2px] text-[9px] font-medium text-slate-300"
+      title={formatAccountMeterTitle(meter, t)}
+    >
+      {translateAccountMeterLabel(meter.label, t)} <span className="font-semibold text-slate-100">{formatAccountMeterValue(meter, t)}</span>
+    </span>
   );
 }
 

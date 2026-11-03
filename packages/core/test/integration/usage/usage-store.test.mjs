@@ -125,6 +125,31 @@ test("UsageStore supports the 180d range with daily buckets", async () => {
   }
 });
 
+test("UsageStore returns whole-history daily totals for the activity heatmap", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-test-"));
+  try {
+    const store = new UsageStore(path.join(dir, "usage.sqlite"));
+    await store.record({
+      createdAt: new Date().toISOString(),
+      durationMs: 10,
+      method: "POST",
+      model: "daily-activity",
+      path: "/v1/messages",
+      provider: "alpha",
+      requestId: "req-daily-activity",
+      statusCode: 200,
+      usage: { inputTokens: 8, outputTokens: 2 }
+    });
+
+    const daily = await store.getDailyActivity();
+    assert.equal(daily.length, 1);
+    assert.match(daily[0].day, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(daily[0].totalTokens, 10);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("UsageStore buckets the 7d range into aligned 5-hour windows", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-7d-buckets-test-"));
   try {

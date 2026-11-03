@@ -65,6 +65,38 @@ token 解析:CCR 自有账号存储 `~/.claude-code-router/codex-oauth-accounts/
 - 引擎(`@the-next-ai/ai-gateway`)请求期也会内存刷新(无回调可观测),store
   token 可能短暂落后——以编译期刷新+写回为主通道。
 - 不碰 `~/.codex/config.toml`、不碰 KNOWN-ISSUES #3 的接管逻辑;cc-switch 零改动。
+- **【产品特征】Codex 凭据池 = 粘性池,禁止自动切换(2026-11-01 用户实测定下)**:
+  不同 ChatGPT 账号之间 prompt 缓存不共享,池内自动轮换会导致缓存全部失效——
+  这是不允许的。实现: provider 级 `credentialFailover: false`(contracts/app.ts,
+  parse 在 config.ts);executor `selectProviderCredentials` 粘性分支只返回
+  最高优先级凭据(credentialChain 长度=1,重试无法换号),401/429/5xx 直接
+  透传给客户端;credential-pool 对粘性池不记冷却。默认值由
+  `normalizeCodexProviderAccountConfig` 在 parse 期对所有本地 codex provider
+  置为 false(存量配置自动迁移;显式 `credentialFailover: true` 可覆盖)。
+  切换账号的唯一途径 = 每账号卡上的"使用"按钮(置顶优先级)。UI 子列表标题
+  有"手动切换(缓存亲和)"提示。导入器也显式置 false。
+
+## Claude 侧新增功能(2026-11-01 夜,基于 cc-switch 审计差距;代码在工作区,未构建)
+- **Claude 多账号(实验性)**: 设置 → Claude 页。每账号一个独立凭据槽
+  (`~/.claude-code-router/claude-accounts/<id>/`,"捕获当前登录" 把 live
+  `~/.claude/.credentials.json` + macOS keychain "Claude Code-credentials"
+  项快照进去);"使用"把槽位凭据写回 live 槽(文件 0600 + security CLI)。
+  **与 Codex 池同一约束: 手动切换,永不自动轮换。** 未做: 运行 `claude auth
+  login` 式的全新登录(需用户在账号目录里手动登录一次后用"捕获"收编)。
+- **Claude 账号配额**: `GET api.anthropic.com/api/oauth/usage`
+  (anthropic-beta: oauth-2025-04-20),token 取 live 或所选账号槽。
+- **会话阅读器**: `~/.claude/projects/**/*.jsonl` 列表(标题/项目/条数/时间)、
+  查看(最近 400 条,截断标注)、删除、`claude --resume <id>` 复制。
+- **直连用量导入**: 解析同批 JSONL(assistant 条目 usage,含
+  cache_creation.ephemeral_1h/5m)→ usage.sqlite,provider=
+  "claude-code-direct";按文件字节偏移增量导入 + requestId 去重
+  (`ccr-claude-direct:<session>:<uuid>`),状态文件在
+  DATADIR/claude-direct-usage-import-state.json。
+- **熔断器**: per-provider 内存状态机(providers/circuit-breaker.ts,连续 5 次
+  失败→open 30s→half-open 单探针)。只作用于 fallbackProviders 的备用链——
+  计划期(execution-plan)跳过 open 熔断的备用 provider,主路由永不熔断;
+  executor 成功/失败点记录。与粘性池约束一致: 熔断只在"不同供应商"之间发生,
+  不在账号间。
 - **每账号用量/重置已补齐(2026-11-01 晚)**: account-service 快照目标/物化路径
   codexOauth 感知(每凭据一个快照, 按凭据 accountId 解析 token), 重置请求按
   credentialId 定向, 旧单账号插件劫持防护, probe 刷新落盘 store, 托盘进度图标

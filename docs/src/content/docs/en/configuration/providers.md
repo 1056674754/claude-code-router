@@ -45,8 +45,11 @@ After import:
 2. Models come from local ZCode config first; if none are configured, CCR uses the ZCode runtime cache or default models.
 3. CCR creates API-key provider plugins that use the key from local ZCode config for request authentication.
 4. If the API endpoint matches a built-in CCR preset, account usage settings are reused from that preset.
+5. Model context windows and output limits follow models.dev's GLM plan data (`GLM-5.3` and `GLM-5.3-Flash`: 1M context, 131072 output), so nothing has to be entered by hand.
 
-If CCR detects ZCode login state but no usable provider API key, the import entry remains unavailable. Configure a usable model provider in ZCode first, then return to CCR and add the provider.
+Since ZCode 3.1x the provider configuration is split into provider family selections in `v2/setting.json`, built-in rules in `v2/runtime/provider/**/zcode-builtin.json`, and `enc:v1` encrypted account credentials in `v2/credentials.json`. CCR resolves the provider that matches the signed-in plan and decrypts that credential with ZCode's own key derivation, so the API key never has to be copied by hand. The legacy single `v2/config.json` provider map is still supported.
+
+If CCR detects ZCode login state but cannot decrypt the local credential (for example when ZCode was launched with a custom `ZCODE_CREDENTIAL_SECRET`), the import entry remains unavailable. Sign in again from the same environment as ZCode, then return to CCR and add the provider.
 
 ### Kimi CLI
 
@@ -173,6 +176,43 @@ Use this mode when the provider has a balance or quota endpoint that returns a c
 | Message field | JSON path for account message. Useful for provider errors, plan notes, or risk-control messages. |
 | Test usage request | Requests and parses the usage endpoint before saving. |
 | Response fields | Lists selectable paths from the response. Buttons such as `Balance rem`, `Balance total`, `Balance used`, `Sub rem`, `Sub limit`, and `Reset` fill the matching field. |
+
+### New API / one-api relay balance
+
+Relays built on New API or one-api keep quota in two different places:
+
+- `GET /api/usage/token/` authenticates with the provider API key. When the key has no dedicated quota the response contains `"unlimited_quota": true`, so there is no key quota to display; CCR then shows "API key has no dedicated quota limit" instead of a balance.
+- `GET /api/user/self` authenticates with the website account, not the API key: send the console access token as `Authorization: Bearer <token>` and the numeric account id in `New-Api-User`. Generate the token in the relay console under personal settings (generate access token).
+
+In the usage settings, fill `New API access token` and `New API user ID`, then click `Insert New API user balance`. CCR appends an `http-json` connector that reads `$.data.quota` and divides it by New API's default of 500000 quota units per dollar. A connector that still carries the generated placeholders reports which headers are missing instead of sending them and receiving an opaque 401. `Test connector` tests the selected connector, so pick the appended balance connector to verify the account side. The access token is stored in plain text in the connector headers, so treat it as a password.
+
+`Balance total (USD)` is an optional override for the meter limit. When it is empty CCR uses `remaining + used` quota as the limit, so the percentage reflects how much of the account credit is left; fill it in to measure the balance against a fixed budget instead. Either way the row turns yellow below 20% and red below 5%.
+
+```json
+{
+  "type": "http-json",
+  "endpoint": "https://relay.example/api/user/self",
+  "auth": "none",
+  "headers": {
+    "Authorization": "Bearer <access-token>",
+    "New-Api-User": "1121"
+  },
+  "parser": "new-api-user-self",
+  "mapping": {
+    "message": "$.message",
+    "meters": [
+      {
+        "id": "new_api_user_balance",
+        "kind": "balance",
+        "label": "User balance",
+        "remaining": "$.data.quota / 500000",
+        "used": "$.data.used_quota / 500000",
+        "unit": "USD"
+      }
+    ]
+  }
+}
+```
 
 ### Browser request
 

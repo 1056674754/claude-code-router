@@ -15,6 +15,7 @@ import type {
 } from "@ccr/core/contracts/app";
 import { normalizeProviderBaseUrl } from "@ccr/core/providers/url";
 import { fetchWithSystemProxy } from "@ccr/core/proxy/system-proxy-fetch";
+import { codexStoredAccountIds, refreshCodexStoredAccountTokens, resolveCodexStoredAccountAuth } from "@ccr/core/providers/codex-account-store";
 import {
   isRecord,
   localAgentProviderApiKey,
@@ -36,7 +37,7 @@ import {
 export const codexDefaultBaseUrl = "https://chatgpt.com/backend-api/codex";
 
 const codexAccountBaseUrl = "https://chatgpt.com/backend-api";
-const codexDefaultModels = ["gpt-5-codex"];
+export const codexDefaultModels = ["gpt-5-codex"];
 const codexProbeTimeoutMs = 8_000;
 
 export type LocalAgentModelCatalog = {
@@ -256,6 +257,24 @@ export function codexCandidate(): LocalAgentProviderCandidate {
       status: "available"
     };
   }
+  // Multi-account pool: accounts imported into the CCR account store count as
+  // a detected login, so probing (edit dialog model discovery) works even
+  // without a live ~/.codex/auth.json.
+  if (codexStoredAccountIds().length > 0) {
+    return {
+      detail: "Codex ChatGPT accounts are already managed in CCR (account store).",
+      id: "codex-api",
+      importable: false,
+      kind: "codex",
+      modelDisplayNames: catalog.modelDisplayNames,
+      modelMetadata: catalog.modelMetadata,
+      models: catalog.models,
+      name: "Codex API",
+      protocol: "openai_responses",
+      sourceFile: "ccr-account-store",
+      status: "available"
+    };
+  }
   return missingCandidate("codex", "codex-api", "Codex API", "openai_responses", catalog.models, catalog.modelDisplayNames);
 }
 
@@ -382,17 +401,55 @@ export function codexRateLimitResetCreditDetails(payload: unknown): ProviderAcco
 }
 
 export function normalizeCodexProviderAccountConfig(provider: GatewayProviderConfig): GatewayProviderConfig {
-  if (!isLocalCodexProvider(provider) || !shouldUseCurrentCodexAccountConfig(provider.account)) {
+  if (!isCodexAccountProvider(provider)) {
     return provider;
   }
-  const account = codexProviderAccountConfig();
+  // Legacy "CCR usage" windows counted this router's own traffic; they are
+  // diagnostics, not ChatGPT account quota, so they are dropped here.
+  const account = withoutLegacyCodexCcrUsageConnectors(provider.account);
+  const base = account === provider.account ? provider : { ...provider, account };
+  // ChatGPT accounts share no prompt cache: a codex credential pool is STICKY
+  // by default — account switching is a manual act (the UI "Use" action),
+  // never automatic failover. An explicit credentialFailover:true overrides.
+  const sticky = { credentialFailover: provider.credentialFailover ?? false };
+  if (!shouldUseCurrentCodexAccountConfig(account)) {
+    return { ...base, ...sticky };
+  }
+  const defaults = codexProviderAccountConfig();
   return {
-    ...provider,
+    ...base,
+    ...sticky,
     account: {
-      ...account,
-      refreshIntervalMs: provider.account?.refreshIntervalMs ?? account.refreshIntervalMs
+      ...defaults,
+      refreshIntervalMs: account?.refreshIntervalMs ?? defaults.refreshIntervalMs
     }
   };
+}
+
+// Local Codex providers authenticate either with the local-agent sentinel key
+// (single-login imports) or with per-account ChatGPT OAuth credentials
+// (multi-account imports carry no provider-level key). Both are local Codex.
+function isCodexAccountProvider(provider: GatewayProviderConfig): boolean {
+  if (normalizeProviderBaseUrl(providerBaseUrl(provider)) !== normalizeProviderBaseUrl(codexDefaultBaseUrl)) {
+    return false;
+  }
+  return isLocalCodexProvider(provider) || providerHasCodexOauthCredential(provider);
+}
+
+function providerHasCodexOauthCredential(provider: GatewayProviderConfig): boolean {
+  return (provider.credentials ?? []).some((credential) =>
+    credential.enabled !== false &&
+    Boolean(credential.codexOauth && (credential.codexOauth.refreshToken || credential.codexOauth.accessToken))
+  );
+}
+
+function withoutLegacyCodexCcrUsageConnectors(account: ProviderAccountConfig | undefined): ProviderAccountConfig | undefined {
+  const connectors = account?.connectors;
+  if (!connectors?.length) {
+    return account;
+  }
+  const filtered = connectors.filter((connector) => !(connector.type === "local-estimate" && connector.id === "codex-ccr-usage"));
+  return filtered.length === connectors.length ? account : { ...account, connectors: filtered };
 }
 
 function isLocalCodexProvider(provider: GatewayProviderConfig): boolean {
@@ -617,6 +674,15 @@ export function readCodexLocalModelCatalog(): LocalAgentModelCatalog {
   };
 }
 
+// The /models endpoint requires the Codex CLI's client_version query param and
+// filters its answer by it — a mismatched/absent version yields HTTP 400 or an
+// empty list. Reuse the version the local CLI cached; fall back to a known-good one.
+function readCodexClientVersion(): string {
+  const record = readJsonRecord(path.join(codexHomeDir(), ".codex", "models_cache.json"));
+  const version = record ? readString(record.client_version) : undefined;
+  return version || "0.164.0";
+}
+
 async function codexCandidateWithProbedModels(candidate: LocalAgentProviderCandidate): Promise<LocalAgentProviderCandidate> {
   const catalog = await fetchCodexModelCatalog();
   if (catalog.models.length === 0) {
@@ -630,20 +696,47 @@ async function codexCandidateWithProbedModels(candidate: LocalAgentProviderCandi
   };
 }
 
+// Resolves an access token for Codex probes: the live ~/.codex/auth.json first,
+// then the CCR account store (multi-account pool) — refreshing and persisting
+// when the stored access token expired.
+async function resolveCodexProbeToken(): Promise<{ accessToken: string; accountId?: string; isFedrampAccount?: boolean } | undefined> {
+  const live = readCodexAuth();
+  if (live?.accessToken) {
+    return { accessToken: live.accessToken, accountId: live.accountId, isFedrampAccount: live.isFedrampAccount };
+  }
+  for (const storedId of codexStoredAccountIds()) {
+    const stored = await resolveCodexStoredAccountAuth({ accountId: storedId }).catch(() => undefined);
+    if (stored?.accessToken) {
+      return { accessToken: stored.accessToken, accountId: stored.accountId };
+    }
+  }
+  if (live?.refreshToken) {
+    const refreshed = await refreshCodexStoredAccountTokens({
+      accountId: live.accountId || "",
+      refreshToken: live.refreshToken
+    }).catch(() => undefined);
+    if (refreshed?.accessToken) {
+      return { accessToken: refreshed.accessToken, accountId: refreshed.accountId };
+    }
+  }
+  return undefined;
+}
+
 async function fetchCodexModelCatalog(): Promise<LocalAgentModelCatalog> {
-  const auth = readCodexAuth();
+  const auth = await resolveCodexProbeToken();
   if (!auth?.accessToken) {
     throw new Error("Codex access token was not found.");
   }
+  const clientVersion = readCodexClientVersion();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), codexProbeTimeoutMs);
   try {
-    const response = await fetchWithSystemProxy(`${codexDefaultBaseUrl}/models`, {
+    const response = await fetchWithSystemProxy(`${codexDefaultBaseUrl}/models?client_version=${encodeURIComponent(clientVersion)}`, {
       headers: {
         accept: "application/json",
         authorization: `Bearer ${auth.accessToken}`,
-        "User-Agent": "codex-cli",
+        "User-Agent": `codex-cli/${clientVersion}`,
         ...(auth.accountId ? { "ChatGPT-Account-Id": auth.accountId } : {}),
         ...(auth.isFedrampAccount ? { "X-OpenAI-Fedramp": "true" } : {})
       },

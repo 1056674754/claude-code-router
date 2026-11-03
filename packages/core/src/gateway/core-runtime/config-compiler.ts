@@ -11,7 +11,8 @@ import { isRecord, stringListValue, stringValue } from "@ccr/core/gateway/intern
 import { fusionBuiltinToolArtifacts, fusionToolFallbackMcpServer, normalizeFusionWebSearchProfileToolName, toolHubMcpServer, withCodexCompatibleVirtualModelProfiles, withFusionVirtualModelAliases, withFusionVisionToolInstructions, withFusionWebSearchToolInstructions } from "@ccr/core/mcp/fusion-config";
 import { mediaToolsMcpServer } from "@ccr/core/mcp/grok-media-config";
 import { resolveGatewayPublicModelId } from "@ccr/core/gateway/features/model-discovery";
-import { activeProviderCredentials, inferProtocol, normalizedProviderCapabilities, normalizeProviderProtocol, providerCapabilityForClientProtocol, providerCapabilityInternalName, providerCapabilityNameMatches, providerCredentialInternalName, providerProtocolForClientProtocol, sortProviderCredentialsForConfig, toCoreGatewayProviders } from "@ccr/core/providers/runtime-topology";
+import { activeProviderCredentials, inferProtocol, normalizedProviderCapabilities, normalizeProviderProtocol, providerCapabilityForClientProtocol, providerCapabilityInternalName, providerCapabilityNameMatches, providerCredentialHasCodexOauth, providerCredentialInternalName, providerCredentialRuntimeId, providerCredentialSlug, providerProtocolForClientProtocol, sortProviderCredentialsForConfig, toCoreGatewayProviders } from "@ccr/core/providers/runtime-topology";
+import { resolveCodexStoredAccountAuth } from "@ccr/core/providers/codex-account-store";
 import { buildRawTraceConfig } from "@ccr/core/observability/raw-trace-sync";
 import { endpoint, gatewayRuntimeSupportsRouterPlugin, resolveLocalAgentAuthProviderHookEntry, resolveRouterPluginEntry, resolveUndiciProxyAgentModule, resolveUpstreamHeaderSanitizerEntry, writeGatewayProxyPreloadFile } from "@ccr/core/gateway/core-runtime/supervisor";
 import { billingUsageSyncHeader, billingUsageSyncPath, claudeCodeOauthBetaHeader, claudeCodeOauthRequiredBeta, coreGatewayAuthHeader, coreGatewayAuthTokenEnv } from "@ccr/core/gateway/internal/shared";
@@ -63,13 +64,19 @@ export async function compileCoreGatewayConfig(
     ...pluginService.getCoreProviderPlugins()
   ]);
   const configuredProviderPlugins = allConfiguredProviderPlugins.filter(providerPluginEnabled);
+  const enabledConfigProviders = config.Providers.filter(isGatewayProviderEnabled);
+  const providerPluginsWithCredentialOauth = withCodexCredentialOauthPlugins(configuredProviderPlugins, enabledConfigProviders);
   const configuredProviderPluginsWithLocalCodexFallbacks = withMissingCodexOauthProviderPlugins(
-    configuredProviderPlugins,
+    providerPluginsWithCredentialOauth,
     allConfiguredProviderPlugins,
-    config.Providers.filter(isGatewayProviderEnabled)
+    enabledConfigProviders
   );
   const providerPluginsWithRuntimeDefaults = await withKimiOauthRuntimeDefaults(
-    await withGrokOauthRuntimeDefaults(withClaudeCodeOauthRuntimeDefaults(withCodexOauthRuntimeDefaults(configuredProviderPluginsWithLocalCodexFallbacks)))
+    await withGrokOauthRuntimeDefaults(
+      withClaudeCodeOauthRuntimeDefaults(
+        await withCodexOauthRuntimeDefaults(configuredProviderPluginsWithLocalCodexFallbacks)
+      )
+    )
   );
   const codexOauthProviderNames = codexOauthLocalProviderNames(providerPluginsWithRuntimeDefaults);
   const enabledProviders = config.Providers.filter(isGatewayProviderEnabled);
@@ -309,6 +316,12 @@ function withMissingCodexOauthProviderPlugins(
     if (!isLocalCodexOauthProvider(provider)) {
       continue;
     }
+    // Providers carrying OAuth credentials are covered by the per-credential
+    // plugins generated in withCodexCredentialOauthPlugins; the single-login
+    // recovery must not inject a second (live-auth) identity for them.
+    if (providerOauthCredentials(provider).length > 0) {
+      continue;
+    }
     const runtimeName = providerRuntimeId(provider);
     const capabilityName = providerCapabilityInternalName(provider, "openai_responses");
     if (
@@ -334,6 +347,65 @@ function withMissingCodexOauthProviderPlugins(
   }
 
   return additions.length > 0 ? [...providerPlugins, ...additions] : providerPlugins;
+}
+
+// One codexOauth plugin per OAuth-bearing credential, bound to that credential's
+// internal provider name (`<provider>::openai_responses::cred:<slug>`), so every
+// pool entry authenticates as its own ChatGPT account.
+function withCodexCredentialOauthPlugins(
+  providerPlugins: unknown[],
+  providers: GatewayProviderConfig[]
+): unknown[] {
+  const existingKeys = new Set(
+    providerPlugins
+      .map((plugin) => isRecord(plugin) ? stringValue(plugin.key)?.toLowerCase() : undefined)
+      .filter((key): key is string => Boolean(key))
+  );
+  const additions: unknown[] = [];
+  for (const provider of providers) {
+    const oauthCredentials = providerOauthCredentials(provider);
+    if (oauthCredentials.length === 0) {
+      continue;
+    }
+    const protocol =
+      normalizeProviderProtocol(provider.type) ??
+      normalizeProviderProtocol(provider.provider) ??
+      inferProtocol(provider);
+    if (protocol !== "openai_responses") {
+      continue;
+    }
+    for (const credential of oauthCredentials) {
+      const codexOauth = credential.codexOauth;
+      if (!codexOauth) {
+        continue;
+      }
+      const internalName = providerCredentialInternalName(provider, "openai_responses", credential);
+      const slug = providerCredentialSlug(providerCredentialRuntimeId(provider, credential));
+      const key = `ccr-local-agent-${slug}-codex-oauth-credential`;
+      if (existingKeys.has(key.toLowerCase())) {
+        continue;
+      }
+      additions.push({
+        codexOauth: {
+          ...(codexOauth.accessToken ? { accessToken: codexOauth.accessToken } : {}),
+          ...(codexOauth.accountId ? { accountId: codexOauth.accountId } : {}),
+          refreshIfMissingAccessToken: true,
+          ...(codexOauth.refreshToken ? { refreshToken: codexOauth.refreshToken } : {}),
+          required: true
+        },
+        key,
+        providerName: internalName,
+        request: withCodexBackendRequestTransform(undefined)
+      });
+    }
+  }
+  return additions.length > 0 ? [...providerPlugins, ...additions] : providerPlugins;
+}
+
+function providerOauthCredentials(provider: GatewayProviderConfig) {
+  return (provider.credentials ?? []).filter((credential) =>
+    credential.enabled !== false && providerCredentialHasCodexOauth(credential)
+  );
 }
 
 function isLocalCodexOauthProvider(provider: GatewayProviderConfig): boolean {
@@ -546,19 +618,64 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
 }
 
 
-function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
-  const codexAuth = readCodexAuth();
-  return providerPlugins.map((plugin) => {
+async function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): Promise<unknown[]> {
+  return Promise.all(providerPlugins.map(async (plugin) => {
     if (!isLocalCodexOauthProviderPlugin(plugin)) {
       return plugin;
     }
 
-    const codexOauth = plugin.codexOauth;
+    const codexOauth = isRecord(plugin.codexOauth) ? plugin.codexOauth : {};
+    const pluginAccountId = stringValue(codexOauth.accountId) ?? stringValue(codexOauth.account_id);
+    let resolved: {
+      accessToken?: string;
+      refreshToken?: string;
+      accountId?: string;
+      isFedrampAccount?: boolean;
+    } | undefined;
+    if (pluginAccountId) {
+      // Account-bound plugin (multi-account pool): resolve from the CCR codex
+      // account store, refreshing and persisting when the access token expired.
+      // The live ~/.codex/auth.json only applies when it belongs to the SAME
+      // account, so several accounts can coexist without stomping each other.
+      resolved = await resolveCodexStoredAccountAuth({
+        accountId: pluginAccountId,
+        accessToken: stringValue(codexOauth.accessToken) ?? stringValue(codexOauth.access_token),
+        refreshToken: stringValue(codexOauth.refreshToken) ?? stringValue(codexOauth.refresh_token)
+      }).catch(() => undefined);
+      if (!resolved) {
+        const codexAuth = readCodexAuth();
+        if (codexAuth && (!codexAuth.accountId || codexAuth.accountId === pluginAccountId)) {
+          resolved = {
+            accessToken: codexAuth.accessToken,
+            refreshToken: codexAuth.refreshToken,
+            accountId: codexAuth.accountId,
+            isFedrampAccount: codexAuth.isFedrampAccount
+          };
+        }
+      }
+    } else {
+      // Unbound plugin: single-login import. Prefer the live Codex auth file so
+      // account checks follow tokens refreshed by Codex CLI/App (legacy behavior).
+      const codexAuth = readCodexAuth();
+      resolved = codexAuth
+        ? {
+            accessToken: codexAuth.accessToken,
+            refreshToken: codexAuth.refreshToken,
+            accountId: codexAuth.accountId,
+            isFedrampAccount: codexAuth.isFedrampAccount
+          }
+        : undefined;
+    }
+
     const nextCodexOauth = {
       ...codexOauth,
-      ...(codexAuth?.accessToken ? { accessToken: codexAuth.accessToken } : {}),
-      ...(codexAuth?.refreshToken ? { refreshToken: codexAuth.refreshToken } : {}),
-      ...(codexAuth?.accountId ? { accountId: codexAuth.accountId } : {})
+      ...(resolved?.accessToken ? { accessToken: resolved.accessToken } : {}),
+      ...(resolved?.refreshToken ? { refreshToken: resolved.refreshToken } : {}),
+      ...(resolved?.accountId
+        ? { accountId: resolved.accountId }
+        : pluginAccountId
+          ? { accountId: pluginAccountId }
+          : {})
     };
     const nextPlugin: Record<string, unknown> = {
       ...plugin,
@@ -566,7 +683,7 @@ function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
       request: withCodexBackendRequestTransform(plugin.request)
     };
 
-    if (codexAuth?.isFedrampAccount) {
+    if (resolved?.isFedrampAccount) {
       const currentAuth = isRecord(plugin.auth) ? plugin.auth : {};
       const currentHeaders = isRecord(currentAuth.headers) ? currentAuth.headers : {};
       nextPlugin.auth = {
@@ -579,7 +696,7 @@ function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
     }
 
     return nextPlugin;
-  });
+  }));
 }
 
 

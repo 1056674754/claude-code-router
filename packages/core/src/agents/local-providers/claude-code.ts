@@ -230,7 +230,7 @@ function claudeCredentialFiles(): string[] {
 
 // Claude Code's plaintext fallback lives in its secure-storage config dir,
 // which CLAUDE_SECURESTORAGE_CONFIG_DIR / CLAUDE_CONFIG_DIR can relocate.
-function claudeCodeStorageDir(): string {
+export function claudeCodeStorageDir(): string {
   const secureStorageDir = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const dir = secureStorageDir !== undefined
     ? secureStorageDir || path.join(os.homedir(), ".claude")
@@ -243,7 +243,7 @@ function claudeCodeStorageDir(): string {
 // `configSuffix` is empty for a default config dir and
 // `-${sha256(NFC(configDir)).slice(0, 8)}` once CLAUDE_CONFIG_DIR or
 // CLAUDE_SECURESTORAGE_CONFIG_DIR is set. Verified against 2.1.220.
-function claudeCodeExpectedKeychainServices(): string[] {
+export function claudeCodeExpectedKeychainServices(): string[] {
   const secureStorageDir = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const usesDefaultDir = secureStorageDir !== undefined ? !secureStorageDir : !process.env.CLAUDE_CONFIG_DIR;
   const configSuffix = usesDefaultDir
@@ -256,7 +256,7 @@ function claudeCodeExpectedKeychainServices(): string[] {
 // Claude Code writes the item under the current `$USER`; a login from an older
 // build (or one that could not resolve a username) sits under a different
 // account on the *same* service name, so the account has to be explicit.
-function claudeCodeKeychainAccount(): string {
+export function claudeCodeKeychainAccount(): string {
   let user: string | undefined;
   try {
     user = process.env.USER || os.userInfo().username;

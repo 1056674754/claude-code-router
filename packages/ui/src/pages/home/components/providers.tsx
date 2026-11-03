@@ -3,14 +3,14 @@ import {
   AddProviderDraft, AnimatedDisclosure, AnimatedIconSwap, AnimatedListItem, AnimatedPopover, AnimatePresence, AppConfig, Badge,
   Box, Braces, Button, Card, CardContent, CardHeader, CardTitle,
   Check, Checkbox, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, cn,
-  compareProviderAccountSnapshots, copyTextToClipboard, createDefaultProviderAccountDraft, createModelCatalogItems, createProviderAccountDraftFromConfig, createProviderCredentialDraft,
+  copyTextToClipboard, createDefaultProviderAccountDraft, createModelCatalogItems, createProviderAccountDraftFromConfig, createProviderCredentialDraft,
   customProviderPresetId, defaultProviderAccountConfigForBaseUrl, Dialog, DialogBody, DialogContent, DialogFooter,
   DialogHeader, DialogTitle, ExternalLink, Eye, EyeOff, Field, findProviderPreset, formatProviderAccountMeterValue, GatewayProviderConfig,
   GatewayProviderProbeResult, getProviderPresets, Globe, inferProviderNameFromBaseUrl, Info, Input, KeyRound, KeyValueRowsControl, Label,
   Layers3, LoaderCircle, localAgentProviderIconUrls, mergeProviderModelLists, modelCatalogItemMatchesQuery, motion,
   Pencil, Plus, PopoverContent, primaryProviderAccountMeter, primaryProviderPresetEndpoint,
   providerAccountConnectorApiKeySafetyIssue, providerAccountConnectorExample, ProviderAccountDraftMode, providerAccountModeOptions, ProviderAccountSnapshot,
-  providerAccountConnectorsTextWithNewApiUserBalanceTemplate, providerAccountSnapshotCredentialLabel, providerAccountSnapshotLabel, ProviderAccountTestPath,
+  formatProviderAccountMeterTitle, formatProviderAccountReset, isProviderAccountManualResetMeter, isProviderAccountSelfUsageMeter, orderProviderAccountSnapshots, preferredProviderCredentialId, providerAccountBadgeVariant, providerAccountConnectorErrorDetail, providerAccountConnectorErrors, providerAccountConnectorsTextWithNewApiUserBalanceTemplate, providerAccountFailureDetail, providerAccountFailureText, providerAccountMetersForDisplay, providerAccountProgressClass, providerAccountSnapshotCredentialLabel, providerAccountSnapshotKey, providerAccountSnapshotLabel, providerAccountStatusTooltip, ProviderAccountTestPath,
   ProviderAccountTestResult, providerBaseUrl, providerCapabilitiesSummary, ProviderCredentialDraft, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerDraftSafetyIssue, providerCredentialDraftPatchFromJson, providerHttpJsonConnectorFromDraft,
   providerBrowserConnectorFromDraft, providerBrowserCredentialsOptions,
   ProviderConnectivityCheckReport, providerCapabilityBaseUrlForProtocol, providerConnectivityApiKeyFromDraft, providerDeepLinkDisplayIcon, providerDraftHasReadyCredentialPool, providerListItemKey, providerMatchesQuery, ProviderPreset, providerPresetIconUrls, providerProbeHasSupportedProtocol,
@@ -21,25 +21,32 @@ import {
 } from "../shared/index";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip, TooltipPortal } from "@/components/ui/tooltip";
+import { CodexResetCreditDialog, ProviderAccountMeterLine, ProviderAccountRefreshButton } from "./dashboard";
 import { providerUrlWithDefaultScheme } from "@ccr/core/providers/url";
-import type { ChromeLoginImportJob, LocalAgentProviderCandidate, OpenRouterProviderCatalogItem, OpenRouterProviderCatalogRequest, ProviderAccountHttpJsonConnectorConfig, ProviderAccountWebContentJsonConnectorConfig } from "@ccr/core/contracts/app";
+import { newApiAccessTokenPlaceholder, newApiUserIdPlaceholder } from "@ccr/core/providers/new-api";
+import type { ChromeLoginImportJob, LocalAgentProviderCandidate, ProviderAccountMeter, OpenRouterProviderCatalogItem, OpenRouterProviderCatalogRequest, ProviderAccountHttpJsonConnectorConfig, ProviderAccountWebContentJsonConnectorConfig } from "@ccr/core/contracts/app";
 import type { ReactNode } from "react";
 
 const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 const emptyProviderPlugins: unknown[] = [];
 
-export function ProvidersView({ accountSnapshots, addProvider, editProvider, notify, providers, removeProvider, setProviderEnabled }: {
+export function ProvidersView({ accountSnapshots, accountSnapshotsLoadFailed, accountSnapshotsRefreshing, addProvider, editProvider, notify, providers, refreshAccountSnapshotsFor, removeProvider, setPreferredCredential, setProviderEnabled }: {
   accountSnapshots: ProviderAccountSnapshot[];
+  accountSnapshotsLoadFailed?: boolean;
+  accountSnapshotsRefreshing?: boolean;
   addProvider: () => void;
   editProvider: (index: number) => void;
   notify: (message: string) => void;
   providers: Array<{ provider: GatewayProviderConfig; index: number }>;
+  refreshAccountSnapshotsFor?: (providerName: string) => Promise<void> | void;
   removeProvider: (index: number) => void;
+  setPreferredCredential?: (providerName: string, credentialId: string) => Promise<void> | void;
   setProviderEnabled: (index: number, enabled: boolean) => void;
 }) {
   const t = useAppText();
   const [query, setQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
+  const [usageProviderKey, setUsageProviderKey] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleProviders = useMemo(
     () => providers.filter(({ provider }) => providerMatchesQuery(provider, normalizedQuery)),
@@ -54,6 +61,9 @@ export function ProvidersView({ accountSnapshots, addProvider, editProvider, not
     }
     return grouped;
   }, [accountSnapshots]);
+  const usageProviderEntry = usageProviderKey
+    ? visibleProviders.find(({ provider, index }) => providerListItemKey(provider, index) === usageProviderKey)
+    : undefined;
 
   function toggleProvider(provider: GatewayProviderConfig, index: number) {
     if (!isGatewayProviderEnabled(provider)) {
@@ -136,11 +146,13 @@ export function ProvidersView({ accountSnapshots, addProvider, editProvider, not
                     const providerAccountSnapshots = accountSnapshotsByProvider.get(provider.name) ?? [];
                     return (
                       <ProviderMobileCard
+                        accountSnapshotsLoadFailed={accountSnapshotsLoadFailed}
                         expanded={expanded}
                         index={index}
                         key={itemKey}
                         onCopyModel={copyModel}
                         onEdit={editProvider}
+                        onOpenUsage={() => setUsageProviderKey(itemKey)}
                         onRemove={removeProvider}
                         onSetEnabled={(providerIndex, enabled) => changeProviderEnabled(provider, providerIndex, enabled)}
                         onToggle={toggleProvider}
@@ -225,7 +237,25 @@ export function ProvidersView({ accountSnapshots, addProvider, editProvider, not
                                   </button>
                                 ) : <span className="text-[11px] text-muted-foreground">-</span>}
                               </div>
-                              <ProviderAccountListCell provider={provider} snapshots={providerAccountSnapshots} />
+                              {providerAccountSnapshots.length > 0 ? (
+                                <button
+                                  aria-label={`${t("Account Usage")} ${provider.name || t("provider")}`}
+                                  className="group -mx-1 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1 rounded px-1 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/30"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setUsageProviderKey(itemKey);
+                                  }}
+                                  title={t("Account Usage")}
+                                  type="button"
+                                >
+                                  <span className="min-w-0 flex-1">
+                                    <ProviderAccountListCell loadFailed={accountSnapshotsLoadFailed} provider={provider} snapshots={providerAccountSnapshots} />
+                                  </span>
+                                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+                                </button>
+                              ) : (
+                                <ProviderAccountListCell loadFailed={accountSnapshotsLoadFailed} provider={provider} snapshots={providerAccountSnapshots} />
+                              )}
                               <div className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={providerBaseUrl(provider)}>
                                 {providerBaseUrl(provider) || t("Not set")}
                               </div>
@@ -317,6 +347,24 @@ export function ProvidersView({ accountSnapshots, addProvider, editProvider, not
               </div>
             </>
           ) : null}
+          {usageProviderEntry && (accountSnapshotsByProvider.get(usageProviderEntry.provider.name) ?? []).length > 0 ? (
+            <ProviderAccountsDialog
+              manualSwitching={usageProviderEntry.provider.credentialFailover === false}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setUsageProviderKey(null);
+                }
+              }}
+              onRefreshAccount={refreshAccountSnapshotsFor}
+              onUse={setPreferredCredential ? (credentialId) => setPreferredCredential(usageProviderEntry.provider.name, credentialId) : undefined}
+              open
+              preferredCredentialId={preferredProviderCredentialId(usageProviderEntry.provider)}
+              providerName={usageProviderEntry.provider.name}
+              refreshing={accountSnapshotsRefreshing}
+              showUseControl={(usageProviderEntry.provider.credentials ?? []).filter((credential) => credential.enabled !== false).length > 1}
+              snapshots={accountSnapshotsByProvider.get(usageProviderEntry.provider.name) ?? []}
+            />
+          ) : null}
         </CardContent>
       </Card>
     </motion.div>
@@ -324,20 +372,24 @@ export function ProvidersView({ accountSnapshots, addProvider, editProvider, not
 }
 
 function ProviderMobileCard({
+  accountSnapshotsLoadFailed,
   expanded,
   index,
   onCopyModel,
   onEdit,
+  onOpenUsage,
   onRemove,
   onSetEnabled,
   onToggle,
   provider,
   snapshots
 }: {
+  accountSnapshotsLoadFailed?: boolean;
   expanded: boolean;
   index: number;
   onCopyModel: (model: string) => void | Promise<void>;
   onEdit: (index: number) => void;
+  onOpenUsage: () => void;
   onRemove: (index: number) => void;
   onSetEnabled: (index: number, enabled: boolean) => void;
   onToggle: (provider: GatewayProviderConfig, index: number) => void;
@@ -400,14 +452,31 @@ function ProviderMobileCard({
           </div>
           <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-2">
             <dt className="truncate text-muted-foreground">{t("Account Usage")}</dt>
-            <dd className="min-w-0"><ProviderAccountListCell provider={provider} snapshots={snapshots} /></dd>
+            <dd className="min-w-0">
+              {snapshots.length > 0 ? (
+                <button
+                  aria-label={`${t("Account Usage")} ${provider.name || t("provider")}`}
+                  className="group -mx-1 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1 rounded px-1 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/30"
+                  onClick={onOpenUsage}
+                  title={t("Account Usage")}
+                  type="button"
+                >
+                  <span className="min-w-0 flex-1">
+                    <ProviderAccountListCell loadFailed={accountSnapshotsLoadFailed} provider={provider} snapshots={snapshots} />
+                  </span>
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+                </button>
+              ) : (
+                <ProviderAccountListCell loadFailed={accountSnapshotsLoadFailed} provider={provider} snapshots={snapshots} />
+              )}
+            </dd>
           </div>
         </dl>
 
         {providerEnabled ? (
           <button
             aria-expanded={expanded}
-            className="mt-3 flex h-8 w-full items-center justify-between rounded-md border border-border bg-muted/20 px-2 text-[12px] font-medium text-muted-foreground"
+            className="-mx-1 mt-3 flex h-7 w-full items-center justify-between rounded px-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
             onClick={() => onToggle(provider, index)}
             type="button"
           >
@@ -419,9 +488,9 @@ function ProviderMobileCard({
         <AnimatePresence initial={false}>
           {providerEnabled && expanded ? (
             <AnimatedDisclosure key="provider-mobile-models">
-              <div className="mt-2 rounded-md border border-border bg-muted/20 p-2">
+              <div className="mt-2 border-t border-border/60 pt-3">
                 {models.length === 0 ? (
-                  <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">{t("No models configured")}</div>
+                  <div className="rounded-md border border-dashed border-border bg-background/60 px-3 py-4 text-center text-[12px] text-muted-foreground">{t("No models configured")}</div>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {models.map((model) => {
@@ -660,40 +729,326 @@ function ModelCatalogDescriptionDialog({
   );
 }
 
-function ProviderAccountListCell({ provider, snapshots }: { provider: GatewayProviderConfig; snapshots: ProviderAccountSnapshot[] }) {
+function ProviderAccountListCell({ loadFailed, provider, snapshots }: { loadFailed?: boolean; provider: GatewayProviderConfig; snapshots: ProviderAccountSnapshot[] }) {
   const t = useAppText();
   if (!isGatewayProviderEnabled(provider)) {
     return <div className="min-w-0 truncate text-[11px] text-muted-foreground">{t("Disabled")}</div>;
   }
-  const sortedSnapshots = [...snapshots].sort(compareProviderAccountSnapshots);
-  const snapshot = sortedSnapshots[0];
+  const preferredCredentialId = preferredProviderCredentialId(provider);
+  const sortedSnapshots = orderProviderAccountSnapshots(snapshots, preferredCredentialId);
+  // A pool serves one account at a time (sticky pools pin the highest-priority
+  // credential). The row summary must describe THAT account — not the most
+  // severe one — so the quota shown is the one requests actually consume.
+  const preferredSnapshot = preferredCredentialId
+    ? sortedSnapshots.find((candidate) => candidate.credentialId === preferredCredentialId)
+    : undefined;
+  const snapshot = preferredSnapshot ?? sortedSnapshots[0];
   const meter = snapshot ? primaryProviderAccountMeter(snapshot) : undefined;
-  const fallbackText = snapshot ? snapshot.message ?? snapshot.errors?.[0]?.message : undefined;
+  // Raw provider text ("fetch failed") is kept in the tooltip; the visible line
+  // is localized because a transient usage failure is not an English phrase
+  // users should have to decode.
+  const failureText = snapshot ? providerAccountFailureText(snapshot) : undefined;
+  const failureDetail = snapshot ? providerAccountFailureDetail(snapshot) : undefined;
+  const connectorErrors = snapshot ? providerAccountConnectorErrors(snapshot) : [];
+  const connectorErrorDetail = snapshot ? providerAccountConnectorErrorDetail(snapshot) : undefined;
 
   if (!provider.account?.enabled && snapshots.length === 0) {
     return <div className="min-w-0 text-[12px] text-muted-foreground">{t("Usage tracking not configured")}</div>;
   }
 
   if (!snapshot) {
-    return <div className="min-w-0 truncate text-[11px] text-muted-foreground">{t("Pending")}</div>;
+    return <div className="min-w-0 truncate text-[11px] text-muted-foreground">{loadFailed ? t("Usage failed to load") : t("Pending")}</div>;
+  }
+
+  if (sortedSnapshots.length > 1) {
+    return (
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-1.5 text-[11px]">
+          <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full", providerAccountProgressClass(snapshot.status))} />
+          <span className="min-w-0 flex-1 truncate font-medium" title={providerAccountSnapshotLabel(snapshot)}>
+            {providerAccountSnapshotCredentialLabel(snapshot)}
+          </span>
+          {meter ? <span className="shrink-0 text-muted-foreground">{formatProviderAccountMeterValue(meter, t)}</span> : null}
+        </div>
+        {!meter && failureText ? (
+          <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={failureDetail}>
+            {t(failureText)}
+          </div>
+        ) : null}
+        {connectorErrors.length > 0 ? (
+          <div className="mt-0.5 truncate text-[10px] text-destructive" title={connectorErrorDetail}>
+            {connectorErrors.length} {t("usage connector(s) failed")}
+          </div>
+        ) : null}
+        <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+          {preferredSnapshot ? `${t("In use")} · ` : ""}{sortedSnapshots.length} {t("accounts")}
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5 text-[11px]">
-        {meter ? <span className="min-w-0 truncate text-[11px] font-medium">{formatProviderAccountMeterValue(meter)}</span> : null}
-        {sortedSnapshots.length > 1 ? <span className="shrink-0 text-muted-foreground">{sortedSnapshots.length} {t("keys")}</span> : null}
+        {meter ? <span className="min-w-0 truncate text-[11px] font-medium">{formatProviderAccountMeterValue(meter, t)}</span> : null}
       </div>
       {providerAccountSnapshotCredentialLabel(snapshot) ? (
         <div className="mt-0.5 truncate text-[10px] font-semibold text-muted-foreground" title={providerAccountSnapshotLabel(snapshot)}>
           {providerAccountSnapshotCredentialLabel(snapshot)}
         </div>
       ) : null}
-      {!meter && fallbackText ? (
-        <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-          {t(fallbackText)}
+      {!meter && failureText ? (
+        <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={failureDetail}>
+          {t(failureText)}
         </div>
       ) : null}
+      {connectorErrors.length > 0 ? (
+        <div className="mt-0.5 truncate text-[10px] text-destructive" title={connectorErrorDetail}>
+          {connectorErrors.length} {t("usage connector(s) failed")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Embedded per-account sub-list (cc-switch style): one row per credential
+// snapshot, each with its own status dot, primary meter bar, compact balance /
+// reset values, refresh button, and an expandable full-meter detail (which
+// carries the manual-reset cards and dialog).
+function ProviderAccountsDialog({
+  manualSwitching,
+  onOpenChange,
+  onRefreshAccount,
+  onUse,
+  open,
+  preferredCredentialId,
+  providerName,
+  refreshing,
+  showUseControl,
+  snapshots
+}: {
+  manualSwitching?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRefreshAccount?: (providerName: string) => Promise<void> | void;
+  onUse?: (credentialId: string) => Promise<void> | void;
+  open: boolean;
+  preferredCredentialId?: string;
+  providerName?: string;
+  refreshing?: boolean;
+  showUseControl?: boolean;
+  snapshots: ProviderAccountSnapshot[];
+}) {
+  const t = useAppText();
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-[560px]">
+        <DialogHeader>
+          <div className="min-w-0">
+            <DialogTitle className="min-w-0 truncate">{providerName || t("provider")}</DialogTitle>
+          </div>
+          <Button aria-label={t("Close dialog")} onClick={() => onOpenChange(false)} size="iconSm" title={t("Close")} type="button" variant="ghost">
+            <X className="h-4 w-4" />
+          </Button>
+        </DialogHeader>
+        <DialogBody>
+          <ProviderAccountsSection
+            manualSwitching={manualSwitching}
+            onRefreshAccount={onRefreshAccount}
+            onUse={onUse}
+            preferredCredentialId={preferredCredentialId}
+            refreshing={refreshing}
+            separated={false}
+            showUseControl={showUseControl}
+            snapshots={snapshots}
+          />
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProviderAccountsSection({
+  manualSwitching,
+  onRefreshAccount,
+  onUse,
+  preferredCredentialId,
+  refreshing,
+  separated,
+  showUseControl,
+  snapshots
+}: {
+  manualSwitching?: boolean;
+  onRefreshAccount?: (providerName: string) => Promise<void> | void;
+  onUse?: (credentialId: string) => Promise<void> | void;
+  preferredCredentialId?: string;
+  refreshing?: boolean;
+  separated?: boolean;
+  showUseControl?: boolean;
+  snapshots: ProviderAccountSnapshot[];
+}) {
+  const t = useAppText();
+  const sortedSnapshots = orderProviderAccountSnapshots(snapshots, preferredCredentialId);
+  if (sortedSnapshots.length === 0) {
+    return null;
+  }
+  return (
+    <div className={cn(separated === false ? undefined : "mt-3 border-t border-border/60 pt-3")}>
+      <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
+        <span className="text-[12px] font-semibold text-foreground">{t("Account usage")}</span>
+        {sortedSnapshots.length > 1 ? <Badge variant="secondary">{sortedSnapshots.length} {t("accounts")}</Badge> : null}
+        {manualSwitching ? (
+          <span className="text-[11px] text-muted-foreground" title={t("Accounts never rotate automatically; switching accounts is manual to preserve the prompt cache.")}>
+            {t("Manual switching (cache affinity)")}
+          </span>
+        ) : null}
+      </div>
+      <div className="space-y-2">
+        {sortedSnapshots.map((account) => (
+          <ProviderAccountSubRow
+            account={account}
+            key={providerAccountSnapshotKey(account)}
+            onRefreshAccount={onRefreshAccount}
+            onUse={onUse}
+            preferredCredentialId={preferredCredentialId}
+            refreshing={refreshing}
+            showUseControl={showUseControl}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProviderAccountSubRow({
+  account,
+  onRefreshAccount,
+  onUse,
+  preferredCredentialId,
+  refreshing,
+  showUseControl
+}: {
+  account: ProviderAccountSnapshot;
+  onRefreshAccount?: (providerName: string) => Promise<void> | void;
+  onUse?: (credentialId: string) => Promise<void> | void;
+  preferredCredentialId?: string;
+  refreshing?: boolean;
+  showUseControl?: boolean;
+}) {
+  const t = useAppText();
+  const [resetDialogMeter, setResetDialogMeter] = useState<ProviderAccountMeter>();
+  // CCR self-usage counters (this router's own token/request volume) are
+  // diagnostics, not ChatGPT account quota: the account panel hides them.
+  const meters = providerAccountMetersForDisplay(account, account.meters.length)
+    .filter((meter) => !isProviderAccountSelfUsageMeter(meter));
+  // Manual-reset meters are counts, not fractions: render them as badges on
+  // the account row (click to open the reset dialog) instead of bar lines.
+  const resetMeters = meters.filter((meter) => isProviderAccountManualResetMeter(meter));
+  const progressMeters = meters.filter((meter) => !isProviderAccountManualResetMeter(meter));
+  const failureText = providerAccountFailureText(account);
+  const failureDetail = providerAccountFailureDetail(account);
+  const connectorErrors = providerAccountConnectorErrors(account);
+  const label = providerAccountSnapshotCredentialLabel(account) || providerAccountSnapshotLabel(account);
+  const refreshHandler = onRefreshAccount ? () => onRefreshAccount(account.provider) : undefined;
+  const isPreferred = Boolean(account.credentialId && preferredCredentialId && account.credentialId === preferredCredentialId);
+  const canUse = Boolean(showUseControl && onUse && account.credentialId && !isPreferred);
+
+  return (
+    <div
+      aria-current={isPreferred ? "true" : undefined}
+      className={cn(
+        "overflow-hidden rounded-md border",
+        isPreferred ? "border-emerald-500/40 bg-emerald-500/5" : "border-border bg-background/60"
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
+        <span aria-hidden className={cn("h-2 w-2 shrink-0 rounded-full", providerAccountProgressClass(account.status))} />
+        {/* The label owns the free space so status badges line up in one column
+            across accounts instead of floating after labels of different length. */}
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground" title={providerAccountSnapshotLabel(account)}>{label}</span>
+        <Badge title={t(providerAccountStatusTooltip(account))} variant={providerAccountBadgeVariant(account.status)}>{t(account.status)}</Badge>
+        {isPreferred ? <Badge variant="success">{t("In use")}</Badge> : null}
+        {resetMeters.map((meter) => (
+          <button
+            aria-label={formatProviderAccountMeterTitle(meter, t)}
+            className="shrink-0"
+            key={meter.id}
+            onClick={() => setResetDialogMeter(meter)}
+            title={formatProviderAccountMeterTitle(meter, t)}
+            type="button"
+          >
+            <Badge variant="outline">
+              {t("Reset")} {formatProviderAccountMeterValue(meter, t)}
+              {meter.resetAt ? ` · ${formatProviderAccountReset(meter.resetAt, t)}` : ""}
+            </Badge>
+          </button>
+        ))}
+        {canUse ? (
+          <Button
+            className="h-6 shrink-0 px-2 text-[11px]"
+            onClick={(event) => {
+              event.stopPropagation();
+              void onUse?.(account.credentialId as string);
+            }}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {t("Use")}
+          </Button>
+        ) : null}
+        <ProviderAccountRefreshButton
+          account={account}
+          onRefresh={refreshHandler}
+          refreshing={refreshing}
+        />
+      </div>
+      {meters.length > 0 ? (
+        // Equal-width grid: every meter line (label / bar / value) aligns
+        // across accounts because each cell has the same template. Compact
+        // sizing keeps the embedded info visually smaller than the main row.
+        <div className="grid grid-cols-2 gap-x-5 gap-y-1 border-t border-border/50 px-3 py-2 @[900px]:grid-cols-6">
+          {progressMeters.map((meter) => (
+            <ProviderAccountMeterLine
+              account={account}
+              compact
+              dimensions={{ height: 2, width: 1 }}
+              key={meter.id}
+              meter={meter}
+              onRefresh={refreshHandler}
+              resetInteraction="dialog"
+            />
+          ))}
+        </div>
+      ) : failureText ? (
+        <div className="border-t border-border/50 px-3 py-2 text-[11px] text-muted-foreground" title={failureDetail}>{t(failureText)}</div>
+      ) : null}
+      {connectorErrors.length > 0 ? (
+        <div className="space-y-1 border-t border-border/50 px-3 py-2">
+          {connectorErrors.slice(0, 4).map((error, index) => (
+            <div
+              className="flex items-start gap-1.5 text-[11px] leading-4 text-destructive"
+              key={`${error.connectorId ?? error.source}-${index}`}
+              title={error.message}
+            >
+              <CircleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="min-w-0 break-words">
+                {error.connectorId ? `${error.connectorId}: ` : ""}{error.message}
+              </span>
+            </div>
+          ))}
+          {connectorErrors.length > 4 ? (
+            <div className="text-[11px] text-muted-foreground">+{connectorErrors.length - 4} {t("more errors")}</div>
+          ) : null}
+        </div>
+      ) : null}
+      <CodexResetCreditDialog
+        account={account}
+        details={resetDialogMeter?.details ?? []}
+        detail={resetDialogMeter?.details?.find((item) => item.redeemable) ?? resetDialogMeter?.details?.[0]}
+        open={Boolean(resetDialogMeter)}
+        onClose={() => setResetDialogMeter(undefined)}
+        onResetComplete={refreshHandler}
+      />
     </div>
   );
 }
@@ -2837,12 +3192,23 @@ function ProviderCredentialRow({
         <Field label={t("Name")}>
           <Input value={credential.name} onChange={(event) => onChange({ name: event.target.value })} />
         </Field>
-        <Field label={t("API key")}>
-          <ProviderApiKeyInput
-            value={credential.apiKey}
-            onChange={(apiKey) => onChange({ apiKey })}
-          />
-        </Field>
+        {credential.codexOauth ? (
+          <Field label={t("ChatGPT login")}>
+            <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-[12px] text-muted-foreground">
+              <KeyRound className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 truncate" title={credential.codexOauth.accountId}>
+                {credential.name || credential.codexOauth.accountId || t("Codex OAuth account")}
+              </span>
+            </div>
+          </Field>
+        ) : (
+          <Field label={t("API key")}>
+            <ProviderApiKeyInput
+              value={credential.apiKey}
+              onChange={(apiKey) => onChange({ apiKey })}
+            />
+          </Field>
+        )}
         <div className="flex items-end justify-end">
           <Button aria-label={`${t("Remove")} ${label}`} onClick={onRemove} size="iconSm" title={t("Remove")} type="button" variant="ghost">
             <Trash2 className="h-3.5 w-3.5" />
@@ -2905,10 +3271,24 @@ function ProviderUsageSettings({
   const [chromeImportLoading, setChromeImportLoading] = useState(false);
   const [chromeImportMessage, setChromeImportMessage] = useState("");
   const [newApiUserId, setNewApiUserId] = useState("");
+  const [newApiAccessToken, setNewApiAccessToken] = useState("");
+  const [newApiAccessTokenVisible, setNewApiAccessTokenVisible] = useState(false);
+  // Optional budget: without a limit a prepaid balance has no ratio, so its
+  // status stays "ok" forever and can never warn.
+  const [newApiLimitUsd, setNewApiLimitUsd] = useState("");
+  // Raw connector JSON can hold several connectors (New API needs two: key quota
+  // plus user balance). Testing always hit the first one, which hid failures in
+  // every later connector, so the tester picks the connector explicitly.
+  const [testConnectorIndex, setTestConnectorIndex] = useState(0);
   const modeOptions = translateOptions(providerAccountModeOptions, t);
   const globalBaseUrl = providerGlobalBaseUrlForProbe(draft.baseUrl, probe, draft.selectedProtocols);
   const usageApiKey = providerConnectivityApiKeyFromDraft(draft);
   const isJsonUsageMode = draft.accountMode === "http-json" || draft.accountMode === "browser";
+  const rawTestConnectors = useMemo(
+    () => (draft.accountMode === "raw" ? testableAccountConnectorsFromText(draft.accountConnectorsText) : []),
+    [draft.accountConnectorsText, draft.accountMode]
+  );
+  const selectedTestConnector = rawTestConnectors[testConnectorIndex] ?? rawTestConnectors[0];
   const showNewApiUserBalanceTemplate = probe?.detectedProvider === "new-api" ||
     draft.accountConnectorsText.includes("new-api-key-usage") ||
     draft.accountConnectorsText.includes("new-api-user-self");
@@ -2943,7 +3323,7 @@ function ProviderUsageSettings({
       return;
     }
     const connector = draft.accountMode === "raw"
-      ? providerRawAccountTestConnector(draft.accountConnectorsText)
+      ? selectedTestConnector?.connector ?? accountConnectorsTestError(draft.accountConnectorsText)
       : draft.accountMode === "browser"
         ? providerBrowserConnectorFromDraft(draft, { requireMeters: false })
         : providerHttpJsonConnectorFromDraft(draft, { requireMeters: false });
@@ -3041,13 +3421,22 @@ function ProviderUsageSettings({
   }
 
   function insertNewApiUserBalanceTemplate() {
-    onChange({
-      accountConnectorsText: providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
-        draft.accountConnectorsText,
-        globalBaseUrl,
-        newApiUserId
-      )
-    });
+    const nextConnectorsText = providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+      draft.accountConnectorsText,
+      globalBaseUrl,
+      {
+        accessToken: newApiAccessToken,
+        limitUsd: Number(newApiLimitUsd.trim() || "0") || undefined,
+        userId: newApiUserId
+      }
+    );
+    onChange({ accountConnectorsText: nextConnectorsText });
+    // The just-inserted balance connector is appended last; point the tester at
+    // it so "Test connector" exercises what the user is configuring.
+    const nextConnectors = testableAccountConnectorsFromText(nextConnectorsText);
+    if (nextConnectors.length > 0) {
+      setTestConnectorIndex(nextConnectors.length - 1);
+    }
   }
 
   return (
@@ -3273,26 +3662,78 @@ function ProviderUsageSettings({
                 </div>
               </Field>
               {showNewApiUserBalanceTemplate ? (
-                <div className="grid grid-cols-1 items-end gap-2 rounded-md border border-border/60 bg-muted/20 p-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                  <div className="min-w-0 space-y-1">
-                    <Label className="text-[11px] font-medium text-muted-foreground">{t("New API user ID")}</Label>
-                    <Input
-                      placeholder="<user-id>"
-                      value={newApiUserId}
-                      onChange={(event) => setNewApiUserId(event.target.value)}
-                    />
+                <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2">
+                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                    <div className="min-w-0 space-y-1">
+                      <Label className="text-[11px] font-medium text-muted-foreground">{t("New API access token")}</Label>
+                      <div className="relative">
+                        <Input
+                          className="pr-9"
+                          placeholder={newApiAccessTokenPlaceholder}
+                          type={newApiAccessTokenVisible ? "text" : "password"}
+                          value={newApiAccessToken}
+                          onChange={(event) => setNewApiAccessToken(event.target.value)}
+                        />
+                        <Button
+                          aria-label={t("Show access token")}
+                          aria-pressed={newApiAccessTokenVisible}
+                          className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2"
+                          onClick={() => setNewApiAccessTokenVisible((current) => !current)}
+                          onMouseDown={(event) => event.preventDefault()}
+                          size="iconSm"
+                          title={t("Show access token")}
+                          type="button"
+                          variant="ghost"
+                        >
+                          {newApiAccessTokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <Label className="text-[11px] font-medium text-muted-foreground">{t("New API user ID")}</Label>
+                      <Input
+                        placeholder={newApiUserIdPlaceholder}
+                        value={newApiUserId}
+                        onChange={(event) => setNewApiUserId(event.target.value)}
+                      />
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <Label className="text-[11px] font-medium text-muted-foreground">{t("Balance total (USD)")}</Label>
+                      <Input
+                        inputMode="decimal"
+                        placeholder={t("Optional, e.g. 1000")}
+                        value={newApiLimitUsd}
+                        onChange={(event) => setNewApiLimitUsd(event.target.value)}
+                      />
+                    </div>
+                    <div className="flex min-w-0 items-end justify-end">
+                      <Button size="sm" type="button" variant="outline" onClick={insertNewApiUserBalanceTemplate}>
+                        {t("Insert New API user balance")}
+                      </Button>
+                    </div>
                   </div>
-                  <Button size="sm" type="button" variant="outline" onClick={insertNewApiUserBalanceTemplate}>
-                    {t("Insert New API user balance")}
-                  </Button>
+                  <div className="text-[11px] leading-5 text-muted-foreground">
+                    {t("Unlimited API keys report no quota, so the balance is read from the account: the access token comes from the relay console (personal settings -> generate access token) together with the numeric user id. The API key cannot read it.")}
+                  </div>
+                  <div className="text-[11px] leading-5 text-muted-foreground">
+                    {t("Leave the balance total empty to measure the remaining share of the account credit (balance + used); fill it in to measure against a fixed budget. The row warns below 20% and goes critical below 5%.")}
+                  </div>
                 </div>
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
+                {rawTestConnectors.length > 1 ? (
+                  <SelectControl
+                    className="w-[260px]"
+                    onChange={(value) => setTestConnectorIndex(Number(value))}
+                    options={rawTestConnectors.map((item, index) => ({ label: item.label, value: String(index) }))}
+                    value={String(Math.min(testConnectorIndex, rawTestConnectors.length - 1))}
+                  />
+                ) : null}
                 <Button disabled={testLoading} onClick={() => void testUsageRequest()} size="sm" type="button" variant="outline">
                   <AnimatedIconSwap iconKey={testLoading ? "testing" : "check"}>
                     {testLoading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
                   </AnimatedIconSwap>
-                  {t("Test first JSON connector")}
+                  {t(rawTestConnectors.length > 1 ? "Test connector" : "Test first JSON connector")}
                 </Button>
                 {testResult ? <Badge variant={testResult.meters.length > 0 ? "success" : "outline"}>{testResult.meters.length} {t("meters")}</Badge> : null}
               </div>
@@ -3314,9 +3755,14 @@ function ProviderUsageSettings({
   );
 }
 
-function providerRawAccountTestConnector(
-  connectorsText: string
-): ProviderAccountHttpJsonConnectorConfig | ProviderAccountWebContentJsonConnectorConfig | string {
+type TestableAccountConnector = {
+  connector: ProviderAccountHttpJsonConnectorConfig | ProviderAccountWebContentJsonConnectorConfig;
+  label: string;
+};
+
+// Explains why the raw connector JSON cannot be tested instead of silently
+// handing back a generic message.
+function accountConnectorsTestError(connectorsText: string): string {
   let connectors: unknown;
   try {
     connectors = JSON.parse(connectorsText.trim() || "[]");
@@ -3326,25 +3772,67 @@ function providerRawAccountTestConnector(
   if (!Array.isArray(connectors)) {
     return "Account connectors must be a JSON array.";
   }
-  const connector = connectors.find((item) =>
-    isPlainRecord(item) && (item.type === "http-json" || item.type === "webcontent-json")
-  );
-  if (!isPlainRecord(connector)) {
-    return "Add an http-json or webcontent-json connector to test.";
+  return "Add an http-json or webcontent-json connector to test.";
+}
+
+// Returns every testable connector in declaration order so the tester can pick
+// the one it wants: a New API account usually declares the key-quota connector
+// first, and testing only that one says nothing about the user-balance one.
+function testableAccountConnectorsFromText(connectorsText: string): TestableAccountConnector[] {
+  let connectors: unknown;
+  try {
+    connectors = JSON.parse(connectorsText.trim() || "[]");
+  } catch {
+    return [];
   }
-  if (connector.type === "webcontent-json") {
-    return {
-      ...(connector as ProviderAccountWebContentJsonConnectorConfig),
-      method: connector.method === "POST" ? "POST" : "GET",
-      type: "webcontent-json"
-    };
+  if (!Array.isArray(connectors)) {
+    return [];
   }
-  return {
-    ...(connector as ProviderAccountHttpJsonConnectorConfig),
-    auth: connector.auth === "provider-api-key-raw" || connector.auth === "none" ? connector.auth : "provider-api-key",
-    method: connector.method === "POST" ? "POST" : "GET",
-    type: "http-json"
-  };
+  const testable: TestableAccountConnector[] = [];
+  connectors.forEach((item, index) => {
+    if (!isPlainRecord(item) || (item.type !== "http-json" && item.type !== "webcontent-json")) {
+      return;
+    }
+    const label = `#${index + 1} ${accountConnectorTestLabel(item)}`;
+    if (item.type === "webcontent-json") {
+      testable.push({
+        connector: {
+          ...(item as ProviderAccountWebContentJsonConnectorConfig),
+          method: item.method === "POST" ? "POST" : "GET",
+          type: "webcontent-json"
+        },
+        label
+      });
+      return;
+    }
+    testable.push({
+      connector: {
+        ...(item as ProviderAccountHttpJsonConnectorConfig),
+        auth: item.auth === "provider-api-key-raw" || item.auth === "none" ? item.auth : "provider-api-key",
+        method: item.method === "POST" ? "POST" : "GET",
+        type: "http-json"
+      },
+      label
+    });
+  });
+  return testable;
+}
+
+function accountConnectorTestLabel(connector: Record<string, unknown>): string {
+  const parser = typeof connector.parser === "string" && connector.parser.trim()
+    ? connector.parser.trim()
+    : typeof connector.type === "string"
+      ? connector.type
+      : "connector";
+  const endpoint = typeof connector.endpoint === "string" ? connector.endpoint.trim() : "";
+  let path = endpoint;
+  try {
+    const url = new URL(endpoint);
+    path = `${url.host}${url.pathname}`;
+  } catch {
+    // Keep the raw endpoint text when it is not an absolute URL.
+  }
+  return path ? `${parser} · ${path}` : parser;
 }
 
 function browserLoginTargetUrl(draft: AddProviderDraft): string {

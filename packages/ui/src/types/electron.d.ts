@@ -27,6 +27,11 @@ import type {
   BotGatewayQrWindowCloseResult,
   BotGatewayQrWindowOpenRequest,
   BotGatewayQrWindowOpenResult,
+  ClaudeAccountEntry,
+  ClaudeAccountUsageResult,
+  ClaudeDirectUsageImportResult,
+  ClaudeSessionDetail,
+  ClaudeSessionSummary,
   BotHandoffScanTarget,
   ChromeLoginImportJob,
   ChromeLoginImportRequest,
@@ -128,11 +133,20 @@ declare global {
       getRequestLogBodyChunk: (request: RequestLogBodyChunkRequest) => Promise<RequestLogBodyChunk | undefined>;
       getRequestLogs: (filter?: RequestLogListFilter) => Promise<RequestLogPage>;
       getUpdateStatus: () => Promise<AppUpdateStatus>;
-      getUsageDailyActivity: () => Promise<UsageDailyActivityPoint[]>;
       getUsageStats: (range?: UsageStatsRange, filter?: UsageStatsFilter) => Promise<UsageStatsSnapshot>;
+      getUsageDailyActivity: () => Promise<UsageDailyActivityPoint[]>;
       getTraySnapshot: (provider?: string) => Promise<TrayUsageSnapshotPayload>;
       installProxyCertificate: () => Promise<ProxyCertificateInstallResult>;
       importLocalAgentProvider: (request: LocalAgentProviderImportRequest) => Promise<LocalAgentProviderImportResult>;
+      importClaudeDirectUsage: () => Promise<ClaudeDirectUsageImportResult>;
+      listClaudeSessions: () => Promise<ClaudeSessionSummary[]>;
+      getClaudeSession: (request: { file: string }) => Promise<ClaudeSessionDetail>;
+      deleteClaudeSession: (request: { file: string }) => Promise<{ deleted: boolean }>;
+      listClaudeAccounts: () => Promise<ClaudeAccountEntry[]>;
+      captureClaudeAccount: (request: { label: string }) => Promise<ClaudeAccountEntry>;
+      switchClaudeAccount: (request: { id: string }) => Promise<{ switched: boolean }>;
+      removeClaudeAccount: (request: { id: string }) => Promise<{ removed: boolean }>;
+      getClaudeAccountUsage: (request: { accountId?: string }) => Promise<ClaudeAccountUsageResult>;
       listMcpServerTools: (serverName: string) => Promise<GatewayMcpToolInfo[]>;
       openBuiltInBrowser: (url?: string) => Promise<void>;
       openBotGatewayQrWindow: (request: BotGatewayQrWindowOpenRequest) => Promise<BotGatewayQrWindowOpenResult>;

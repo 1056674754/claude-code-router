@@ -202,7 +202,7 @@ test("AccountSummaryPanel covers empty, unsupported, and metered account states"
   assert.doesNotMatch(selectedHtml, /openai \/ Primary Key/);
 });
 
-test("AccountSummaryPanel prioritizes Codex manual reset meter with expiration", () => {
+test("AccountSummaryPanel keeps the Codex manual reset count on the account row", () => {
   const resetAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
   const resetEffectiveAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const html = renderToStaticMarkup(
@@ -257,11 +257,12 @@ test("AccountSummaryPanel prioritizes Codex manual reset meter with expiration",
   );
 
   assert.match(html, /Primary quota/);
+  assert.match(html, /Secondary quota/);
   assert.match(html, /Manual resets/);
   assert.match(html, /expires in/);
   assert.match(html, /2 resets/);
-  assert.match(html, /width:/);
-  assert.doesNotMatch(html, /Secondary quota/);
+  // Two quota bars: the reset credit is a count and never gets a bar of its own.
+  assert.equal((html.match(/width:/g) ?? []).length, 2);
 });
 
 test("RangeSwitch renders every usage range option", () => {

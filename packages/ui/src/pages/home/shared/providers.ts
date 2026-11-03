@@ -811,7 +811,24 @@ export function providerConnectivityProviderPlugins(
     return draft.providerPlugins.filter(providerPluginEnabled);
   }
   if (providerConnectivityApiKeyFromDraft(draft) !== localAgentProviderApiKeyValue) {
-    return [];
+    // OAuth credential rows (e.g. ChatGPT accounts imported from cc-switch)
+    // carry no static API key; the probe authenticates through a synthesized
+    // codexOauth plugin for the first enabled account instead.
+    const oauthCredential = draft.credentials.find((credential) =>
+      credential.enabled !== false && credential.codexOauth
+    );
+    if (!oauthCredential?.codexOauth) {
+      return [];
+    }
+    return [{
+      codexOauth: {
+        ...oauthCredential.codexOauth,
+        refreshIfMissingAccessToken: true,
+        required: true
+      },
+      key: "ccr-local-agent-draft-codex-oauth",
+      providerName: draft.name.trim() || existingProvider?.name?.trim() || "provider"
+    }];
   }
 
   const names = localAgentProviderPluginNamesForDraft(draft, existingProvider);
@@ -922,7 +939,9 @@ export function createProviderCredentialDraft(index = 0): ProviderCredentialDraf
 }
 
 export function providerDraftHasReadyCredentialPool(draft: Pick<AddProviderDraft, "credentials">): boolean {
-  return draft.credentials.some((credential) => credential.enabled && credential.apiKey.trim());
+  return draft.credentials.some((credential) =>
+    credential.enabled && (Boolean(credential.apiKey.trim()) || Boolean(credential.codexOauth))
+  );
 }
 
 export function providerConnectivityApiKeyFromDraft(draft: Pick<AddProviderDraft, "apiKey" | "credentialMode" | "credentials">): string {
@@ -935,6 +954,7 @@ export function providerConnectivityApiKeyFromDraft(draft: Pick<AddProviderDraft
 export function providerCredentialDraftFromConfig(credential: ProviderCredentialConfig, index: number): ProviderCredentialDraft {
   return {
     apiKey: credential.api_key || credential.apiKey || credential.apikey || "",
+    ...(credential.codexOauth ? { codexOauth: credential.codexOauth } : {}),
     enabled: credential.enabled !== false,
     id: credential.id ?? "",
     limitsText: credential.limits ? JSON.stringify(credential.limits, null, 2) : "",
@@ -952,6 +972,7 @@ export function providerCredentialsFromDraft(draft: AddProviderDraft): ProviderC
     const name = row.name.trim() || `Key ${index + 1}`;
     const hasAnyValue = Boolean(
       apiKey ||
+      row.codexOauth ||
       row.id.trim() ||
       row.name.trim() ||
       row.priority.trim() ||
@@ -961,7 +982,9 @@ export function providerCredentialsFromDraft(draft: AddProviderDraft): ProviderC
     if (!hasAnyValue) {
       continue;
     }
-    if (!apiKey) {
+    // OAuth credential rows (e.g. ChatGPT accounts imported from cc-switch)
+    // carry no static API key.
+    if (!apiKey && !row.codexOauth) {
       return "Provider credential rows require API keys.";
     }
 
@@ -980,7 +1003,8 @@ export function providerCredentialsFromDraft(draft: AddProviderDraft): ProviderC
     }
 
     credentials.push({
-      api_key: apiKey,
+      ...(apiKey ? { api_key: apiKey } : {}),
+      ...(row.codexOauth ? { codexOauth: row.codexOauth } : {}),
       enabled: row.enabled,
       ...(row.id.trim() ? { id: row.id.trim() } : {}),
       name,
@@ -1705,12 +1729,23 @@ export function providerAccountConnectorExample(): string {
   ], null, 2);
 }
 
-export function providerAccountConnectorsTextWithNewApiUserBalanceTemplate(connectorsText: string, baseUrl: string, userId: string): string {
-  const connector = newApiUserSelfConnectorConfig(baseUrl.trim() || "https://new-api.example/v1");
-  connector.headers = {
-    ...(connector.headers ?? {}),
-    "New-Api-User": userId.trim() || "<user-id>"
-  };
+export type NewApiUserBalanceTemplateOptions = {
+  accessToken?: string;
+  /** Optional budget in USD; gives the balance meter a limit so it can warn. */
+  limitUsd?: number;
+  userId: string;
+};
+
+export function providerAccountConnectorsTextWithNewApiUserBalanceTemplate(
+  connectorsText: string,
+  baseUrl: string,
+  options: NewApiUserBalanceTemplateOptions
+): string {
+  const connector = newApiUserSelfConnectorConfig(baseUrl.trim() || "https://new-api.example/v1", {
+    accessToken: options.accessToken,
+    limitUsd: options.limitUsd,
+    userId: options.userId
+  });
 
   let connectors: unknown[] = [];
   try {
@@ -2516,4 +2551,55 @@ function isProbeAuthorizationMissingMessage(message: string): boolean {
   const match = /^http\s+401\s*:\s*(.*)$/i.exec(normalized);
   const detail = match?.[1] ?? normalized;
   return detail.includes("header中未收到authorization参数") && detail.includes("无法进行身份验证");
+}
+
+// UI-side credential ordering, mirroring the gateway's sticky-pool pick:
+// lower priority number first, then config order. Credentials without a
+// priority use their index + 1, exactly like the gateway, so the "in use"
+// marker points at the account requests are actually pinned to.
+export function sortProviderCredentialsForUi(credentials: ProviderCredentialConfig[]): ProviderCredentialConfig[] {
+  return credentials
+    .map((credential, index) => ({ credential, index }))
+    .sort(compareProviderCredentialsForUi)
+    .map((entry) => entry.credential);
+}
+
+function compareProviderCredentialsForUi(
+  left: { credential: ProviderCredentialConfig; index: number },
+  right: { credential: ProviderCredentialConfig; index: number }
+): number {
+  return providerCredentialPriorityForUi(left.credential, left.index) - providerCredentialPriorityForUi(right.credential, right.index) ||
+    left.index - right.index;
+}
+
+function providerCredentialPriorityForUi(credential: ProviderCredentialConfig, index: number): number {
+  return Number.isFinite(credential.priority) ? Number(credential.priority) : index + 1;
+}
+
+function providerCredentialSlugForUi(value: string | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "key";
+}
+
+export function providerCredentialRuntimeIdForUi(provider: GatewayProviderConfig, credential: ProviderCredentialConfig): string {
+  const explicitId = credential.id?.trim();
+  if (explicitId) {
+    return explicitId;
+  }
+  const index = provider.credentials?.indexOf(credential) ?? -1;
+  const oneBasedIndex = index >= 0 ? index + 1 : 1;
+  const label = credential.name?.trim() || credential.label?.trim();
+  return label ? `${providerCredentialSlugForUi(label)}-${oneBasedIndex}` : `key-${oneBasedIndex}`;
+}
+
+// The credential the pool currently prefers (first enabled by priority).
+export function preferredProviderCredentialId(provider: GatewayProviderConfig): string | undefined {
+  const preferred = (provider.credentials ?? [])
+    .map((credential, index) => ({ credential, index }))
+    .filter((entry) => entry.credential.enabled !== false)
+    .sort(compareProviderCredentialsForUi)[0];
+  return preferred ? providerCredentialRuntimeIdForUi(provider, preferred.credential) : undefined;
 }

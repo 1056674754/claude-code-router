@@ -820,13 +820,18 @@ export function accountStatusRank(status: ProviderAccountSnapshot["status"]): nu
   return 0;
 }
 
+// Manual reset credits are a count, not a quota: there is no denominator to
+// fill a bar with. The old fallback drew the credit's expiry window instead,
+// so "2 resets" rendered as a ~93% full quota. The account row owns the number
+// now, so this list stays quota-only and no longer spends a display slot on it.
 export function accountMetersForDisplay(snapshot: ProviderAccountSnapshot, maxCount: number): ProviderAccountMeter[] {
-  const meters = snapshot.meters.slice(0, maxCount);
-  const manualResetMeter = snapshot.meters.find(isAccountManualResetMeter);
-  if (!manualResetMeter || meters.includes(manualResetMeter) || meters.length < maxCount) {
-    return meters;
-  }
-  return [...meters.slice(0, Math.max(0, maxCount - 1)), manualResetMeter];
+  return snapshot.meters
+    .filter((meter) => !isAccountManualResetMeter(meter))
+    .slice(0, maxCount);
+}
+
+export function accountManualResetMeter(snapshot: ProviderAccountSnapshot): ProviderAccountMeter | undefined {
+  return snapshot.meters.find(isAccountManualResetMeter);
 }
 
 function isAccountManualResetMeter(meter: ProviderAccountMeter): boolean {

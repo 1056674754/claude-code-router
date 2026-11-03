@@ -50,6 +50,7 @@ import type {
   OverviewWidgetVariant,
   ProviderAccountConfig,
   ProviderAccountConnectorConfig,
+  ProviderCredentialCodexOauthConfig,
   ProviderCredentialConfig,
   ProviderModelCapabilities,
   ProviderModelMetadata,
@@ -1455,6 +1456,7 @@ function parseProviders(value: unknown): GatewayProviderConfig[] | undefined {
         capabilities: parseProviderCapabilities(item.capabilities)
           ?? parseProviderProtocolCapability(item),
         credentials: parseProviderCredentials(item.credentials ?? item.keys ?? item.apiKeys),
+        credentialFailover: readBoolean(item.credentialFailover ?? item.credential_failover),
         fallbackProviders: parseStringArray(item.fallbackProviders ?? item.fallback_providers),
         maxConcurrency: readPositiveNumber(item.maxConcurrency ?? item.max_concurrency),
         extraBody: item.extraBody,
@@ -1756,7 +1758,10 @@ function parseProviderCredentials(value: unknown): ProviderCredentialConfig[] | 
       }
 
       const apiKey = readString(item.api_key) || readString(item.apiKey) || readString(item.apikey) || readString(item.key) || readString(item.token);
-      if (!apiKey) {
+      const codexOauth = parseProviderCredentialCodexOauth(item.codexOauth ?? item.codex_oauth);
+      // OAuth credentials (e.g. ChatGPT accounts imported from cc-switch) carry
+      // no static API key; they are valid credentials on their own.
+      if (!apiKey && !codexOauth) {
         return undefined;
       }
 
@@ -1768,6 +1773,7 @@ function parseProviderCredentials(value: unknown): ProviderCredentialConfig[] | 
       return {
         account: parseProviderAccount(item.account),
         api_key: apiKey,
+        ...(codexOauth ? { codexOauth } : {}),
         enabled: typeof item.enabled === "boolean" ? item.enabled : undefined,
         ...(legacyLabel ? { label: legacyLabel } : {}),
         ...(id ? { id } : {}),
@@ -1780,6 +1786,26 @@ function parseProviderCredentials(value: unknown): ProviderCredentialConfig[] | 
     .filter((item): item is ProviderCredentialConfig => Boolean(item));
 
   return credentials.length > 0 ? credentials : undefined;
+}
+
+function parseProviderCredentialCodexOauth(value: unknown): ProviderCredentialCodexOauthConfig | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const refreshToken = readString(value.refreshToken) || readString(value.refresh_token);
+  const accessToken = readString(value.accessToken) || readString(value.access_token);
+  const accountId = readString(value.accountId) || readString(value.account_id);
+  if (!refreshToken && !accessToken) {
+    return undefined;
+  }
+  return {
+    ...(accountId ? { accountId } : {}),
+    ...(accessToken ? { accessToken } : {}),
+    ...(readString(value.idToken) || readString(value.id_token) ? { idToken: readString(value.idToken) || readString(value.id_token) } : {}),
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(typeof value.required === "boolean" ? { required: value.required } : {}),
+    ...(typeof value.refreshIfMissingAccessToken === "boolean" ? { refreshIfMissingAccessToken: value.refreshIfMissingAccessToken } : {})
+  };
 }
 
 function parseProviderAccount(value: unknown): ProviderAccountConfig | undefined {

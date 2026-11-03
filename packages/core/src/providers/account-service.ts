@@ -13,15 +13,19 @@ import {
   resolveGrokAuth,
   resolveKimiAuth,
   readZcodeLocalProviderCredential,
-  zcodeDefaultBaseUrl
+  zcodeDefaultBaseUrl,
+  type OAuthTokenSet
 } from "@ccr/core/agents/local-providers/service";
+import { codexAccountStoreFile, resolveCodexStoredAccountAuth, upsertCodexStoredAccount } from "@ccr/core/providers/codex-account-store";
 import { grokAccessTokenExpired } from "@ccr/core/agents/local-providers/grok";
 import { pluginService } from "@ccr/core/plugins/service";
 import { getUsageTotalsSince } from "@ccr/core/usage/store";
 import { findProviderPresetByBaseUrl, providerEndpointCanReceiveProviderApiKey } from "@ccr/core/providers/presets/index";
+import { providerCredentialHasCodexOauth, sortProviderCredentialsForConfig } from "@ccr/core/providers/runtime-topology";
 import { fetchWithSystemProxy } from "@ccr/core/proxy/system-proxy-fetch";
 import { normalizeProviderBaseUrl, providerUrlWithDefaultScheme } from "@ccr/core/providers/url";
 import { fetchProviderAccountWebContentJson } from "@ccr/core/providers/account-webcontent";
+import { newApiUserSelfConnectorPlaceholderIssue } from "@ccr/core/providers/new-api";
 import { isGatewayProviderEnabled } from "@ccr/core/contracts/app";
 import type {
   AppConfig,
@@ -72,6 +76,13 @@ type ConnectorResult = {
   errors: ProviderAccountConnectorError[];
   meters: ProviderAccountMeter[];
   message?: string;
+  /**
+   * The message explains a capability the connector lacks instead of describing
+   * the account (for example "unlimited keys carry no quota"). It stays useful
+   * when nothing else answered, but must not outrank a sibling connector's
+   * actual balance.
+   */
+  messageIsGuidance?: boolean;
   source: ProviderAccountConnectorSource;
   status?: ProviderAccountStatus;
 };
@@ -104,7 +115,9 @@ type CodexOauthRefreshResult = {
 
 const defaultRefreshIntervalMs = 5 * 60 * 1000;
 const minRefreshIntervalMs = 30 * 1000;
-const maxErrorRefreshIntervalMs = 60 * 1000;
+// Failed usage fetches are cached briefly so the poller retries soon after a
+// transient network error instead of pinning an error state for minutes.
+const maxErrorRefreshIntervalMs = 20 * 1000;
 const maxStaleAccountSnapshotMs = 2 * 60 * 1000;
 const maxCacheEntries = 500;
 const standardAccountPaths = ["/.well-known/ccr/account", "/v1/account/limits"];
@@ -178,6 +191,12 @@ export async function testProviderAccountConnector(request: ProviderAccountTestR
     name: request.providerName?.trim() || "Provider"
   };
   const connector = normalizeProviderAccountTestConnector(request.connector);
+  if (connector.type === "http-json" && connector.parser === "new-api-user-self") {
+    const placeholderIssue = newApiUserSelfConnectorPlaceholderIssue(connector);
+    if (placeholderIssue) {
+      throw new Error(placeholderIssue);
+    }
+  }
   const payload = connector.type === "webcontent-json"
     ? await fetchWebContentJson(provider, connector)
     : await fetchJson(connector.endpoint, provider, connector.auth, connector.headers, connector.method, connector.body);
@@ -213,7 +232,7 @@ export async function testProviderAccountConnector(request: ProviderAccountTestR
     };
   }
   if (connector.parser === "new-api-user-self") {
-    const meters = newApiUserSelfMeters(payload, source);
+    const meters = newApiUserSelfConnectorMeters(connector, payload, source);
     return {
       meters,
       message: meters.length === 0 ? readMappedString(connector.mapping.message, payload) ?? "No user balance data available." : readMappedString(connector.mapping.message, payload),
@@ -286,8 +305,8 @@ export async function resetCodexRateLimitCredit(request: ProviderAccountResetReq
   }
 
   const config = await loadAppConfig();
-  const provider = codexResetProvider(config, providerName, request.credentialId);
-  const materialized = await materializeProviderAccountRequest(config, provider);
+  const { credential: resetCredential, provider } = codexResetProvider(config, providerName, request.credentialId);
+  const materialized = await materializeProviderAccountRequest(config, provider, resetCredential);
   const payload = await fetchJson(
     codexRateLimitResetCreditConsumeEndpoint,
     materialized.provider,
@@ -384,7 +403,7 @@ async function refreshProviderAccountSnapshot(
   const now = new Date();
   const credentialId = credential ? providerCredentialRuntimeId(provider, credential) : undefined;
   const connectorResults = await Promise.all(
-    normalizeConnectors(account).map((connector) => resolveConnector(config, provider, connector, now, credentialId))
+    normalizeConnectors(account).map((connector) => resolveConnector(config, provider, connector, now, credentialId, credential))
   );
   const snapshot = mergeConnectorResults(provider.name.trim(), connectorResults, now, refreshIntervalMs, credential, credentialId);
   const cacheTtlMs = providerAccountCacheTtl(snapshot, refreshIntervalMs);
@@ -476,7 +495,11 @@ function providerAccountTargets(provider: GatewayProviderConfig): ProviderAccoun
   return providerAccount && providerApiKey(provider) ? [{ account: providerAccount, provider }] : [];
 }
 
-function codexResetProvider(config: AppConfig, providerName: string, credentialId: string | undefined): GatewayProviderConfig {
+function codexResetProvider(
+  config: AppConfig,
+  providerName: string,
+  credentialId: string | undefined
+): { credential?: ProviderCredentialConfig; provider: GatewayProviderConfig } {
   const normalizedProviderName = normalizeProviderName(providerName);
   const provider = config.Providers.find((candidate) =>
     isGatewayProviderEnabled(candidate) &&
@@ -498,8 +521,11 @@ function codexResetProvider(config: AppConfig, providerName: string, credentialI
   }
 
   return target.credential
-    ? providerWithCredentialApiKey(target.provider, target.credential, target.account)
-    : { ...target.provider, account: target.account };
+    ? {
+        credential: target.credential,
+        provider: providerWithCredentialApiKey(target.provider, target.credential, target.account)
+      }
+    : { provider: { ...target.provider, account: target.account } };
 }
 
 function providerAccountHasCodexResetCreditsConnector(account: ProviderAccountConfig): boolean {
@@ -611,9 +637,11 @@ export function providerAccountTargetsForTest(provider: GatewayProviderConfig): 
 }
 
 function activeProviderCredentials(provider: GatewayProviderConfig): ProviderCredentialConfig[] {
+  // OAuth credentials (e.g. ChatGPT accounts imported from cc-switch) join the
+  // account panel like API-key credentials: one snapshot target per account.
   return (provider.credentials ?? []).filter((credential) =>
     credential.enabled !== false &&
-    Boolean(providerCredentialApiKey(credential))
+    (Boolean(providerCredentialApiKey(credential)) || providerCredentialHasCodexOauth(credential))
   );
 }
 
@@ -622,10 +650,14 @@ function providerWithCredentialApiKey(
   credential: ProviderCredentialConfig,
   account: ProviderAccountConfig
 ): GatewayProviderConfig {
+  const apiKey = providerCredentialApiKey(credential) ||
+    // OAuth credentials authenticate through their codexOauth account, resolved
+    // at materialization time; the sentinel key routes the request there.
+    (providerCredentialHasCodexOauth(credential) ? localAgentProviderApiKey : "");
   return {
     ...provider,
     account,
-    api_key: providerCredentialApiKey(credential),
+    api_key: apiKey,
     apiKey: undefined,
     apikey: undefined
   };
@@ -654,14 +686,15 @@ async function resolveConnector(
   provider: GatewayProviderConfig,
   connector: ProviderAccountConnectorConfig,
   now: Date,
-  credentialId?: string
+  credentialId?: string,
+  credential?: ProviderCredentialConfig
 ): Promise<ConnectorResult> {
   try {
     if (connector.type === "standard") {
-      return await resolveStandardConnector(config, provider, connector);
+      return await resolveStandardConnector(config, provider, connector, credential);
     }
     if (connector.type === "http-json") {
-      return await resolveHttpJsonConnector(config, provider, connector);
+      return await resolveHttpJsonConnector(config, provider, connector, credential);
     }
     if (connector.type === "webcontent-json") {
       return await resolveWebContentJsonConnector(provider, connector);
@@ -681,7 +714,8 @@ async function resolveConnector(
 async function resolveStandardConnector(
   config: AppConfig,
   provider: GatewayProviderConfig,
-  connector: ProviderAccountStandardConnectorConfig
+  connector: ProviderAccountStandardConnectorConfig,
+  credential?: ProviderCredentialConfig
 ): Promise<ConnectorResult> {
   const endpoints = standardConnectorEndpoints(provider, connector);
   let lastError = "";
@@ -689,7 +723,7 @@ async function resolveStandardConnector(
   for (const endpoint of endpoints) {
     try {
       const request = providerAccountConnectorUsesProviderApiKey(connector)
-        ? await materializeProviderAccountRequest(config, provider)
+        ? await materializeProviderAccountRequest(config, provider, credential)
         : { provider };
       const payload = await fetchJson(endpoint, request.provider, connector.auth, {
         ...(connector.headers ?? {}),
@@ -716,10 +750,19 @@ async function resolveStandardConnector(
 async function resolveHttpJsonConnector(
   config: AppConfig,
   provider: GatewayProviderConfig,
-  connector: ProviderAccountHttpJsonConnectorConfig
+  connector: ProviderAccountHttpJsonConnectorConfig,
+  credential?: ProviderCredentialConfig
 ): Promise<ConnectorResult> {
+  if (connector.parser === "new-api-user-self") {
+    // The generated connector ships placeholders for the console token and the
+    // user id; sending them verbatim only yields an opaque 401 from the relay.
+    const placeholderIssue = newApiUserSelfConnectorPlaceholderIssue(connector);
+    if (placeholderIssue) {
+      return connectorError("http-json", placeholderIssue, connectorId(connector));
+    }
+  }
   const request = providerAccountConnectorUsesProviderApiKey(connector)
-    ? await materializeProviderAccountRequest(config, provider)
+    ? await materializeProviderAccountRequest(config, provider, credential)
     : { provider };
   const payload = await fetchJson(connector.endpoint, request.provider, connector.auth, {
     ...(connector.headers ?? {}),
@@ -748,12 +791,13 @@ async function resolveHttpJsonConnector(
     return {
       errors: [],
       message: meters.length === 0 ? newApiKeyUsageFallbackMessage(payload) : readMappedString(connector.mapping.message, payload),
+      messageIsGuidance: meters.length === 0 && newApiKeyUsageGuidanceMessage(payload) !== undefined,
       meters,
       source: "http-json"
     };
   }
   if (connector.parser === "new-api-user-self") {
-    const meters = newApiUserSelfMeters(payload);
+    const meters = newApiUserSelfConnectorMeters(connector, payload, "http-json");
     return {
       errors: [],
       message: meters.length === 0 ? readMappedString(connector.mapping.message, payload) ?? "No user balance data available." : readMappedString(connector.mapping.message, payload),
@@ -801,12 +845,13 @@ async function resolveWebContentJsonConnector(
     return {
       errors: [],
       message: meters.length === 0 ? newApiKeyUsageFallbackMessage(payload) : readMappedString(connector.mapping.message, payload),
+      messageIsGuidance: meters.length === 0 && newApiKeyUsageGuidanceMessage(payload) !== undefined,
       meters,
       source
     };
   }
   if (connector.parser === "new-api-user-self") {
-    const meters = newApiUserSelfMeters(payload, source);
+    const meters = newApiUserSelfConnectorMeters(connector, payload, source);
     return {
       errors: [],
       message: meters.length === 0 ? readMappedString(connector.mapping.message, payload) ?? "No user balance data available." : readMappedString(connector.mapping.message, payload),
@@ -892,9 +937,10 @@ async function localEstimateMeter(
   credentialId?: string
 ): Promise<ProviderAccountMeter | undefined> {
   const limit = normalizeNumber(window.limit);
-  if (!window.id || !window.label || !limit || limit <= 0) {
+  if (!window.id || !window.label) {
     return undefined;
   }
+  const bounded = limit !== undefined && limit > 0;
 
   const since = localEstimateWindowStart(window.window, now);
   const totals = await getUsageTotalsSince(since, {
@@ -911,9 +957,10 @@ async function localEstimateMeter(
     id: window.id,
     kind: window.unit === "tokens" ? "tokens" : window.unit === "requests" ? "requests" : "time_window",
     label: window.label,
-    limit,
-    remaining: Math.max(0, limit - used),
-    resetAt: localEstimateResetAt(window.window, now).toISOString(),
+    ...(bounded ? { limit, remaining: Math.max(0, (limit ?? 0) - used) } : {}),
+    // Pure usage meters (no limit) are rolling counters, not quotas — no reset
+    // countdown, so the title does not render a misleading "remaining" suffix.
+    ...(bounded ? { resetAt: localEstimateResetAt(window.window, now).toISOString() } : {}),
     source: "local-estimate",
     unit: window.unit,
     used,
@@ -950,7 +997,10 @@ function mergeConnectorResults(
       : "merged";
   const explicitStatus = mostSevereStatus(results.map((result) => result.status).filter((status): status is ProviderAccountStatus => Boolean(status)));
   const status = explicitStatus ?? statusFromMeters(meters, errors, results.length);
-  const message = results.find((result) => result.message)?.message ?? (errors.length > 0 && meters.length === 0 ? errors[0]?.message : undefined);
+  // A guidance message only explains what this connector cannot do, so a sibling
+  // connector that returned real meters outranks it.
+  const message = results.find((result) => result.message && !(result.messageIsGuidance && meters.length > 0))?.message
+    ?? (errors.length > 0 && meters.length === 0 ? errors[0]?.message : undefined);
 
   return {
     credentialId,
@@ -1125,16 +1175,52 @@ function newApiKeyUsageMeter(payload: unknown, source: ProviderAccountConnectorS
 }
 
 function newApiKeyUsageFallbackMessage(payload: unknown): string {
+  return newApiKeyUsageGuidanceMessage(payload) ?? readMappedString("$.message", payload) ?? "No API key quota data available.";
+}
+
+function newApiKeyUsageGuidanceMessage(payload: unknown): string | undefined {
   const data = newApiKeyUsageData(payload);
   if (data && readBoolean(readJsonRecordValue(data, "unlimited_quota")) === true) {
     return "API key has no dedicated quota limit. Configure a New API user balance connector with an access token and New-Api-User to read account balance.";
   }
-  return readMappedString("$.message", payload) ?? "No API key quota data available.";
+  return undefined;
 }
 
 function newApiUserSelfMeters(payload: unknown, source: ProviderAccountConnectorSource = "http-json"): ProviderAccountMeter[] {
   const meter = newApiUserSelfMeter(payload, source);
   return meter ? [meter] : [];
+}
+
+// New API reports account balance as raw "quota"; the connector's mapping says
+// how that scales to money (the generated template divides by 500000). Write the
+// connector's own meters whenever it declares them, and only fall back to the
+// 1:1 quota meter for hand-written connectors that omit meters entirely.
+function newApiUserSelfConnectorMeters(
+  connector: ProviderAccountHttpJsonConnectorConfig | ProviderAccountWebContentJsonConnectorConfig,
+  payload: unknown,
+  source: ProviderAccountConnectorSource
+): ProviderAccountMeter[] {
+  const meters = connector.mapping.meters.length > 0
+    ? mappedMetersFromPayload(connector, payload, source)
+    : newApiUserSelfMeters(payload, source);
+  return meters.map((meter) => newApiUserSelfMeterWithDerivedLimit(meter));
+}
+
+// A prepaid balance has no limit of its own, so CCR could never derive a ratio
+// and the row would stay "ok" until the account hit zero. New API also reports
+// the used quota, and remaining + used is the account's total credit, which
+// works as a live limit: the row warns once less than 20% of the credit is left
+// and goes critical below 5%. An explicit mapping limit still wins.
+function newApiUserSelfMeterWithDerivedLimit(meter: ProviderAccountMeter): ProviderAccountMeter {
+  if (meter.kind !== "balance" || meter.limit !== undefined) {
+    return meter;
+  }
+  const remaining = normalizeNumber(meter.remaining);
+  const used = normalizeNumber(meter.used);
+  if (remaining === undefined || used === undefined || remaining + used <= 0) {
+    return meter;
+  }
+  return { ...meter, limit: remaining + used };
 }
 
 function newApiUserSelfMeter(payload: unknown, source: ProviderAccountConnectorSource): ProviderAccountMeter | undefined {
@@ -1464,22 +1550,23 @@ function normalizeMeterDetail(value: unknown): ProviderAccountMeterDetail | unde
 
 async function materializeProviderAccountRequest(
   config: AppConfig,
-  provider: GatewayProviderConfig
+  provider: GatewayProviderConfig,
+  credential?: ProviderCredentialConfig
 ): Promise<MaterializedProviderAccountRequest> {
   if (providerApiKey(provider) !== localAgentProviderApiKey) {
     return { provider };
   }
 
-  const credential = await localAgentProviderAccountCredential(config, provider);
-  if (!credential?.apiKey) {
+  const credentialResult = await localAgentProviderAccountCredential(config, provider, credential);
+  if (!credentialResult?.apiKey) {
     throw new Error("Local agent account credential was not found. Sign in again, then re-import the local login provider.");
   }
 
   return {
-    headers: credential.headers,
+    headers: credentialResult.headers,
     provider: {
       ...provider,
-      api_key: credential.apiKey,
+      api_key: credentialResult.apiKey,
       apiKey: undefined,
       apikey: undefined
     }
@@ -1494,8 +1581,26 @@ function providerAccountConnectorUsesProviderApiKey(
 
 async function localAgentProviderAccountCredential(
   config: AppConfig,
-  provider: GatewayProviderConfig
+  provider: GatewayProviderConfig,
+  credential?: ProviderCredentialConfig
 ): Promise<LocalAgentAccountCredential | undefined> {
+  // Explicit per-credential target (multi-account pool): resolve THAT account
+  // directly — plugins and the first-credential fallback must not override it.
+  if (credential && providerCredentialHasCodexOauth(credential)) {
+    return await localCodexAccountCredential({
+      codexOauth: {
+        ...credential.codexOauth,
+        refreshIfMissingAccessToken: true
+      },
+      key: "ccr-local-agent-codex-credential-codex-oauth",
+      providerName: provider.name
+    });
+  }
+
+  // Providers carrying their own OAuth credentials own their identities: a
+  // stale single-login codex-oauth plugin bound to the same provider name must
+  // not hijack snapshot/reset resolution away from the credentials pool.
+  const providerHasOauthCredentials = providerCodexOauthCredentials(provider).length > 0;
   for (const plugin of config.providerPlugins ?? []) {
     if (!localAgentProviderPluginMatches(plugin, provider)) {
       continue;
@@ -1503,6 +1608,9 @@ async function localAgentProviderAccountCredential(
 
     const key = readString((plugin as { key?: unknown }).key)?.toLowerCase() ?? "";
     if (key.includes("codex-oauth")) {
+      if (providerHasOauthCredentials) {
+        continue;
+      }
       return await localCodexAccountCredential(plugin);
     }
     if (key.includes("claude-code-oauth")) {
@@ -1525,6 +1633,19 @@ async function localAgentProviderAccountCredential(
     }
   }
   if (isLocalCodexProvider(provider)) {
+    // Multi-account provider: resolve the highest-priority OAuth credential
+    // from the account store instead of the single live login.
+    const [oauthCredential] = sortProviderCredentialsForConfig(providerCodexOauthCredentials(provider));
+    if (oauthCredential?.codexOauth) {
+      return await localCodexAccountCredential({
+        codexOauth: {
+          ...oauthCredential.codexOauth,
+          refreshIfMissingAccessToken: true
+        },
+        key: "ccr-local-agent-codex-credential-codex-oauth",
+        providerName: provider.name
+      });
+    }
     return await localCodexAccountCredential({
       codexOauth: { refreshIfMissingAccessToken: true },
       key: "ccr-local-agent-codex-fallback-codex-oauth",
@@ -1565,6 +1686,13 @@ function localAgentProviderPluginMatches(plugin: unknown, provider: GatewayProvi
 
 function isLocalCodexProvider(provider: GatewayProviderConfig): boolean {
   return normalizeProviderBaseUrl(providerBaseUrl(provider)) === normalizeProviderBaseUrl(codexDefaultBaseUrl);
+}
+
+function providerCodexOauthCredentials(provider: GatewayProviderConfig) {
+  return (provider.credentials ?? []).filter((credential) =>
+    credential.enabled !== false &&
+    Boolean(credential.codexOauth && (credential.codexOauth.refreshToken || credential.codexOauth.accessToken))
+  );
 }
 
 function isLocalZcodeProvider(provider: GatewayProviderConfig): boolean {
@@ -1614,9 +1742,35 @@ function zcodeProviderTextMatches(values: Array<string | undefined>): boolean {
 
 async function localCodexAccountCredential(plugin: Record<string, unknown>): Promise<LocalAgentAccountCredential> {
   const codexOauth = isRecord(plugin.codexOauth) ? plugin.codexOauth : {};
-  const codexAuth = readCodexAuth();
-  // Imported plugins contain a point-in-time access token. Prefer the live Codex
-  // auth file so account checks follow tokens refreshed by Codex CLI/App.
+  const pluginAccountId = readString(codexOauth.accountId) || readString(codexOauth.account_id);
+  let codexAuth: OAuthTokenSet | undefined;
+  if (pluginAccountId) {
+    // Account-bound plugin (multi-account pool): resolve from the CCR codex
+    // account store (refreshing + persisting there); the live ~/.codex/auth.json
+    // only applies when it holds the SAME account's login.
+    const stored = await resolveCodexStoredAccountAuth({
+      accountId: pluginAccountId,
+      accessToken: readString(codexOauth.accessToken) || readString(codexOauth.access_token),
+      refreshToken: readString(codexOauth.refreshToken) || readString(codexOauth.refresh_token)
+    }).catch(() => undefined);
+    if (stored) {
+      codexAuth = {
+        accountId: stored.accountId || pluginAccountId,
+        accessToken: stored.accessToken,
+        refreshToken: stored.refreshToken,
+        sourceFile: codexAccountStoreFile(stored.accountId || pluginAccountId)
+      };
+    } else {
+      const live = readCodexAuth();
+      if (live && (!live.accountId || live.accountId === pluginAccountId)) {
+        codexAuth = live;
+      }
+    }
+  } else {
+    // Imported plugins contain a point-in-time access token. Prefer the live Codex
+    // auth file so account checks follow tokens refreshed by Codex CLI/App.
+    codexAuth = readCodexAuth();
+  }
   let apiKey =
     codexAuth?.accessToken ||
     readString(codexOauth.accessToken) ||
@@ -1646,6 +1800,14 @@ async function localCodexAccountCredential(plugin: Record<string, unknown>): Pro
       apiKey = refreshed.accessToken || apiKey;
       accountId = refreshed.accountId || claims?.accountId || accountId;
       isFedrampAccount = refreshed.isFedrampAccount ?? claims?.isFedrampAccount ?? isFedrampAccount;
+      if (pluginAccountId) {
+        upsertCodexStoredAccount({
+          accountId: pluginAccountId,
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          idToken: refreshed.idToken
+        });
+      }
     }
   }
 
@@ -2356,6 +2518,14 @@ function readMappedNumber(value: ProviderAccountMappedNumberExpression | undefin
 }
 
 function resolveMappedNumberExpression(expression: string, payload: unknown): unknown {
+  // Division binds tighter than subtraction and requires explicit spaces so
+  // JSON paths ($.data/items) never split.
+  const division = splitMappedDivisionExpression(expression);
+  if (division) {
+    const left = normalizeNumber(resolveMappedNumberExpression(division.left, payload));
+    const right = normalizeNumber(resolveMappedNumberExpression(division.right, payload));
+    return left === undefined || right === undefined || right === 0 ? undefined : left / right;
+  }
   const subtraction = splitMappedSubtractionExpression(expression);
   if (subtraction) {
     const left = normalizeNumber(resolveMappedNumberTerm(subtraction.left, payload));
@@ -2363,6 +2533,16 @@ function resolveMappedNumberExpression(expression: string, payload: unknown): un
     return left === undefined || right === undefined ? undefined : left - right;
   }
   return resolveMappedNumberTerm(expression, payload);
+}
+
+function splitMappedDivisionExpression(expression: string): { left: string; right: string } | undefined {
+  const match = expression.match(/^(.+?)\s+\/\s+(.+)$/);
+  if (!match) {
+    return undefined;
+  }
+  const left = match[1].trim();
+  const right = match[2].trim();
+  return left && right ? { left, right } : undefined;
 }
 
 function splitMappedSubtractionExpression(expression: string): { left: string; right: string } | undefined {

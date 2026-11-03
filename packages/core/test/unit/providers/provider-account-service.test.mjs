@@ -781,3 +781,53 @@ function jwt(payload) {
 function base64url(value) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
+
+test("http-json mapping divides quota expressions for USD display", async (t) => {
+  const previousFetch = globalThis.fetch;
+  let seenUserAgent = "";
+  globalThis.fetch = async (input, init) => {
+    seenUserAgent = init?.headers?.["user-agent"] ?? init?.headers?.["User-Agent"] ?? "";
+    return new Response(JSON.stringify({
+      success: true,
+      data: { quota: 117774946, used_quota: 154432105, group: "default" }
+    }), { headers: { "content-type": "application/json" }, status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  const result = await testProviderAccountConnector({
+    apiKey: "sk-provider-key",
+    baseUrl: "https://kpzhu.example",
+    connector: {
+      type: "http-json",
+      auth: "none",
+      endpoint: "https://kpzhu.example/api/user/self",
+      method: "GET",
+      headers: {
+        "Authorization": "Bearer <access-token>",
+        "Content-Type": "application/json",
+        "New-Api-User": "1",
+        "User-Agent": "ccr/1.0"
+      },
+      mapping: {
+        meters: [{
+          id: "new_api_user_balance_usd",
+          kind: "balance",
+          label: "User balance",
+          remaining: "$.data.quota / 500000",
+          unit: "USD",
+          used: "$.data.used_quota / 500000"
+        }]
+      }
+    },
+    providerName: "kpzhu"
+  });
+
+  const meter = result.meters.find((item) => item.id === "new_api_user_balance_usd");
+  assert.ok(meter);
+  assert.equal(meter.unit, "USD");
+  assert.equal(meter.remaining, 235.549892);
+  assert.equal(meter.used, 308.86421);
+  assert.equal(seenUserAgent, "ccr/1.0");
+});
