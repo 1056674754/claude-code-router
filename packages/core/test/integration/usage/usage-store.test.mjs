@@ -1180,3 +1180,107 @@ test("#1801 unknown HTTP status is excluded from failure and success rate counts
     assert.equal(stats.models[0].successRate, 0.5);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("UsageStore rebuilds rollups stored in the pre-error_count column order", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ccr-usage-rollup-order-"));
+  try {
+    const dbFile = path.join(dir, "usage.sqlite");
+    const seed = new UsageStore(dbFile);
+    const createdAt = new Date().toISOString();
+    await seed.record({
+      createdAt,
+      durationMs: 10,
+      method: "POST",
+      model: "glm-5.3",
+      path: "/v1/messages",
+      provider: "ZCode API",
+      requestId: "req-rollup-order-1",
+      statusCode: 200,
+      usage: { cacheReadTokens: 4000, inputTokens: 100, outputTokens: 50 }
+    });
+    await seed.record({
+      createdAt,
+      durationMs: 10,
+      method: "POST",
+      model: "glm-5.3",
+      path: "/v1/messages",
+      provider: "ZCode API",
+      requestId: "req-rollup-order-2",
+      statusCode: 500,
+      usage: { inputTokens: 5, outputTokens: 0 }
+    });
+    await seed.getStats("7d", { includeProxy: true });
+
+    // Databases migrated by ALTER TABLE kept error_count last, while the writer
+    // inserts in declared order. Reproduce the shift the old writer produced.
+    const database = createBetterSqliteDatabase(dbFile);
+    database.exec(`
+      CREATE TABLE usage_rollups_legacy (
+        day_key TEXT NOT NULL,
+        hour_bucket INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        client TEXT NOT NULL DEFAULT '',
+        credential_id TEXT NOT NULL DEFAULT '',
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_key, hour_bucket, provider, model, client, credential_id)
+      );
+      DROP TABLE usage_rollups;
+      ALTER TABLE usage_rollups_legacy RENAME TO usage_rollups;
+      INSERT INTO usage_rollups
+      SELECT
+        strftime('%Y-%m-%d', created_at, 'localtime'),
+        CAST(strftime('%H', created_at, 'localtime') AS INTEGER),
+        provider, model, client, COALESCE(credential_id, ''),
+        COUNT(*),
+        COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN status_code > 0 AND (status_code < 200 OR status_code >= 400) THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0),
+        COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens), 0),
+        COALESCE(SUM(duration_ms), 0),
+        COALESCE(SUM(COALESCE(cost_usd, 0)), 0)
+      FROM usage_events
+      GROUP BY 1, 2, 3, 4, 5, 6;
+    `);
+    database.close();
+
+    // The stale row proves the reproduction: error counts land in input_tokens.
+    const corrupted = createBetterSqliteDatabase(dbFile);
+    assert.equal(
+      corrupted.prepare("SELECT SUM(input_tokens) AS total FROM usage_rollups").get().total,
+      1
+    );
+    corrupted.close();
+
+    const repaired = new UsageStore(dbFile);
+    const stats = await repaired.getStats("7d", { includeProxy: true });
+    assert.equal(stats.totals.inputTokens, 105);
+    assert.equal(stats.totals.outputTokens, 50);
+    assert.equal(stats.totals.cacheTokens, 4000);
+    assert.equal(stats.totals.errorCount, 1);
+    assert.ok(Math.abs(stats.totals.cacheRatio - 4000 / 4105) < 1e-9);
+
+    const shape = createBetterSqliteDatabase(dbFile);
+    const columns = shape.prepare("PRAGMA table_info(usage_rollups)").all().map((row) => row.name);
+    shape.close();
+    assert.equal(columns[8], "error_count");
+    assert.equal(columns[16], "cost_usd");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

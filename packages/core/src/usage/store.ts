@@ -376,7 +376,7 @@ export class UsageStore {
       try {
         database.prepare("DELETE FROM usage_rollups WHERE day_key = ?").run(dayKey);
         database.prepare(`
-          INSERT INTO usage_rollups
+          INSERT INTO usage_rollups (${usageRollupColumnOrder.join(", ")})
           SELECT
             strftime('%Y-%m-%d', created_at, 'localtime') AS day_key,
             CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour_bucket,
@@ -669,26 +669,7 @@ export class UsageStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS usage_rollups (
-        day_key TEXT NOT NULL,
-        hour_bucket INTEGER NOT NULL,
-        provider TEXT NOT NULL DEFAULT '',
-        model TEXT NOT NULL DEFAULT '',
-        client TEXT NOT NULL DEFAULT '',
-        credential_id TEXT NOT NULL DEFAULT '',
-        request_count INTEGER NOT NULL DEFAULT 0,
-        success_count INTEGER NOT NULL DEFAULT 0,
-        error_count INTEGER NOT NULL DEFAULT 0,
-        input_tokens INTEGER NOT NULL DEFAULT 0,
-        output_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
-        prompt_tokens INTEGER NOT NULL DEFAULT 0,
-        duration_ms INTEGER NOT NULL DEFAULT 0,
-        cost_usd REAL NOT NULL DEFAULT 0,
-        PRIMARY KEY (day_key, hour_bucket, provider, model, client, credential_id)
-      );
+      ${usageRollupsCreateSql};
       CREATE TABLE IF NOT EXISTS usage_rollup_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -829,16 +810,19 @@ function ensureUsageSchema(database: SqlDatabase): void {
   if (!columns.has("credential_id")) {
     database.exec("ALTER TABLE usage_events ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''");
   }
-  const rollupColumns = new Set(
-    queryRows(database, "PRAGMA table_info(usage_rollups)")
-      .map((row) => String(row.name ?? ""))
-      .filter(Boolean)
-  );
-  if (rollupColumns.size > 0 && !rollupColumns.has("error_count")) {
-    // Rollups aggregated before error_count existed cannot be amended in
-    // place; drop them so the next read recomputes every day from events.
-    database.exec("ALTER TABLE usage_rollups ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0");
-    database.exec("DELETE FROM usage_rollups");
+  const rollupColumns = queryRows(database, "PRAGMA table_info(usage_rollups)")
+    .map((row) => String(row.name ?? ""))
+    .filter(Boolean);
+  if (rollupColumns.length > 0 && rollupColumns.join(",") !== usageRollupColumnOrder.join(",")) {
+    // Databases that predate error_count gained it through ALTER TABLE, which
+    // appends the column at the end while freshly created tables keep it right
+    // after success_count. The rollup writer inserts positionally, so a drifted
+    // table shifts every column past success_count by one slot (input read back
+    // as error_count, cache reads read back as outputs, and so on). Rollups are
+    // derived data: rebuild the table in canonical order and drop the watermark
+    // so the next read recomputes every day from usage_events.
+    database.exec("DROP TABLE IF EXISTS usage_rollups");
+    database.exec(usageRollupsCreateSql);
     database.exec("DELETE FROM usage_rollup_meta WHERE key = 'watermark'");
   }
   database.exec("CREATE INDEX IF NOT EXISTS usage_events_client_idx ON usage_events(client)");
@@ -1060,6 +1044,47 @@ function toStoredUsageEvent(row: Record<string, SqlValue>): StoredUsageEvent {
     totalTokens: normalizeCount(row.total_tokens)
   };
 }
+
+const usageRollupColumnOrder = [
+  "day_key",
+  "hour_bucket",
+  "provider",
+  "model",
+  "client",
+  "credential_id",
+  "request_count",
+  "success_count",
+  "error_count",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "computed_total_tokens",
+  "prompt_tokens",
+  "duration_ms",
+  "cost_usd"
+] as const;
+
+const usageRollupsCreateSql = `CREATE TABLE IF NOT EXISTS usage_rollups (
+        day_key TEXT NOT NULL,
+        hour_bucket INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        client TEXT NOT NULL DEFAULT '',
+        credential_id TEXT NOT NULL DEFAULT '',
+        request_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        computed_total_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_key, hour_bucket, provider, model, client, credential_id)
+      )`;
 
 const usageTotalsSelect = `
             COUNT(*) AS request_count,
