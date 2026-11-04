@@ -79,9 +79,10 @@ CREATE TABLE gateway_app_profiles (
 输入：`live-state.json` 的每 app `stack{members, keys}` + 各 app 现有 provider 行。
 输出：`upstream_models` 行 + `gateway_app_profiles` 行。
 
-1. 对每个 member（供应商）：
-   - 有的 app（claude）按 `meta.stackModels` 或四档 env 推出模型（P0 §1.2）
-   - 其他 app 按各自 provider 声明的模型列表推出（opencode `models`、openclaw `models`、codex 模型表…）
+1. 对每个 app 的每个 provider 行，**直接调用 P0 §2 那三个已有推导函数**得到模型清单
+   （`mode::stack::claude_models` / `desktop_models` / `codex_model_ids`）：
+   - 不要重写推导：`[1M]` 剥标记、显示名、窗口这些规则都在函数里
+   - 目录范围是**所有 provider 行**（不只 stack 成员），这样用户能自由挑模型
 2. 按 (endpoint, model_id) 去重写入 `upstream_models`，`source` 记来源
 3. `keys` 登记簿原样保留（id 永久归属不能丢）：迁移成 `upstream_models.id` 的稳定分配
 4. `gateway_app_profiles`：
@@ -110,7 +111,9 @@ CREATE TABLE gateway_app_profiles (
 2. 幂等：连续跑两次 `refresh_gateway_catalog`，行数不变
 3. `default`/`slots` 反解与迁移前客户端文件一致（golden 对比）
 4. 非法引用（不存在的供应商 / 模型）解析报错，不静默
-5. 真实库：26 个供应商、CTYun 7 app、Kimi 3 条 —— 目录条数与 P0 §1.2 推导一致
+5. 真实库预估（已用库副本算过）：claude 5 家 / desktop 6 家 / codex 2 家，
+   去 `[1M]` 后 **18 个不同模型名**；`kimi-k3` 在 Kimi 与 Kimi For Coding 两个供应商下各一行，
+   目录约 **20 行 / 7 个供应商**。超出或少于都要能解释
 
 ---
 

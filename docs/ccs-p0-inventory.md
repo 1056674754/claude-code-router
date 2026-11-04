@@ -66,6 +66,14 @@
 | Codex app-server 模型目录 | `services/provider/codex_client_catalog.rs`（含代次 `codex-catalog-history.json`、重启检测） | `ccs-<key>/<model>` | 同上 + 用户确认重启 |
 | Grok `[model."<名>"]` 表 | `live/project/grok.rs` + `Written.tables` | 表名=模型名 | 直连切换（Grok 不支持 Stack） |
 
+模型推导的**唯一入口**（P1 迁移直接调用，不许重写）：
+
+| app | 函数 | 来源 |
+|---|---|---|
+| claude | `mode/stack.rs:227 claude_models` | `meta.stackModels`，否则 `ANTHROPIC_MODEL` + 四档 env |
+| claude-desktop | `mode/stack.rs:398 desktop_models` | `meta.claudeDesktopModelRoutes` → `configured_proxy_model_routes` |
+| codex | `mode/stack.rs:369 codex_model_ids` → `codex_config::codex_published_models` | 该家 config 文本 + settings |
+
 **结论**：发布机制成熟且有兼容性约束（Codex 目录代次、Desktop 选择器黑名单、Claude 的 `claude` 字样）。
 替换只需把「数据源 = 该 app 的 stack」换成「数据源 = 网关目录 + 本 app 的 profile」，id 规则保留。
 
