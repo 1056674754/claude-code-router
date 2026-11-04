@@ -891,3 +891,75 @@ Desktop 的入口不是"藏在文件里"：它在 Claude Desktop 自己的设置
 
 对纳管的影响：入口写入器必须是**读-改-写 + 漂移检测**，不能"我写我的"。Desktop 这套机制
 可以复制给其它 app。
+
+## 22. 用 CCR 的模型中心配置替换 CCS 的「聚合」（用户判定：聚合是垃圾设计）
+
+### 22.1 CCS 现在是什么
+
+聚合（Stack）是 per-app 的：成员、key 登记簿、发布清单都存在该 app 的 `live-state.json`
+（`mode/state.rs:395` `stack(store, app)`）。加入一家供应商后，它贡献的模型是：
+
+- 该行配了 `meta.stackModels`（自由列表）→ 发列表里的
+- 没配 → 回落到模型映射：`ANTHROPIC_MODEL` + `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`
+  （`mode/stack.rs:224-232`）
+
+所以默认形态是「4 档 × M 家」（4×M），界面上 CTYun 显示 1 个模型、kpzhu 显示 4 个模型，
+就是这句话的两种情形。**provider 是被加入的单位，模型是被带出来的结果。**
+
+CCR 反过来：**模型是被直接配置的单位，provider 只是模型的来源。**
+
+### 22.2 CCR 是什么（`packages/core/src/contracts/app.ts:1651` `ProfileConfig`）
+
+```
+model          默认模型（必填）
+fableModel?    opusModel?    sonnetModel?    haikuModel?     4 个槽位，全部可选
+smallFastModel?
+availableModels?: string[]                                   允许模型列表（N，任意多）
+providerId?/providerName?                                    只是默认来源
+routing?                                                     增强路由（策略，不是模式）
+```
+
+模型引用的格式是 `<provider 名>/<model id>`（截图里 `Ctyun/deepseek-v4.1-flash-1017`、
+`Codex ChatGPT/gpt-6.1-sol`）。**没有 直连/路由/聚合 三选一**：网关永远按模型路由，选模型就是选上游。
+
+### 22.3 差异的本质
+
+| | CCS 聚合 | CCR |
+|---|---|---|
+| 配置单位 | 供应商（加入 → 带出它的模型） | 模型（直接选，跨供应商） |
+| 数量 | 4 × M（默认）；有 `stackModels` 才能任意 | 模型任意：4 个可选槽位 + 默认 + N |
+| 范围 | per-app：每个 app 各自一份成员与发布清单 | 全局：供应商池一次配齐，每个 agent 只配自己的模型 |
+| 模式 | 直连 / 路由 / 聚合 三选一 | 无模式 |
+
+### 22.4 替换设计（照 CCR，不发明）
+
+**全局（一次）：**
+
+1. 供应商池：供应商 + 凭据 + 上游协议，数量自由（已有 `upstreams/endpoints/credentials` 三层可用）
+2. 模型目录：每个模型 = `供应商/模型 id` + 显示名 + 窗口 + 能力；目录来自供应商池
+
+**每个 app 一份接入配置（对应 CCR 的 profile）：**
+
+1. 默认模型
+2. 该 app 支持的槽位，全部可选：Claude 是 fable/opus/sonnet/haiku；Codex 是 model/review_model
+   （`live/project/codex.rs:54-55`）；Grok 只有 models.default（`live/project/grok.rs`）；Desktop 是模型列表
+3. 允许模型列表：N 个，进 app 自己的模型选择器
+
+**模式收缩为两种**：直连 / 网关。聚合并入网关的模型目录；不再有「聚合」这个模式。
+
+### 22.5 这条替换动到哪些现有机制
+
+| 现有 | 处理 |
+|---|---|
+| `mode/stack.rs` 整套（成员/keys/id 生成/`resolve`） | id 生成与严格解析保留；成员与目录上提到网关 |
+| per-app `live-state.json` 的 `stack` 段 | 迁移成网关目录 + 每 app 的 profile；旧数据一次性搬运 |
+| 模型发布（claude `modelPicker`、desktop `inferenceModels`、codex 目录、grok 表） | 写入器保留，数据源从「该 app 的 stack」换成「网关目录 + 本 app 的 profile」 |
+| 路由模式（单一上游 + 故障转移） | 合并进网关：上游集合 = 供应商池，选择按模型 |
+| 直连模式 | 保留（无入口的 app 仍走它） |
+
+### 22.6 验收标准（按用户的三个场景）
+
+1. 一家供应商只有 1 个模型时，界面上就是 1 个，不会为了凑 4 档补三个空位
+2. 一家供应商有 4 个模型时，4 个都出现；4×M 的乘法关系消失
+3. claude 的 `/model` 里能同时看到不同供应商的模型，选中哪个就用哪个，不用切"当前供应商"
+4. 每个 app 的配置互不影响：给 claude 加的模型不会出现在 codex 里
