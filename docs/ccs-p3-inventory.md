@@ -99,5 +99,5 @@ Codex 的模型目录条目带**每条模型自己的工具 profile 与协议**�
 | Codex `config.toml` 的 `model` 写引用 | ✅ | `Target::Proxy.model`；测试 `codex_enter_writes_the_model_reference_from_app_model_config` |
 | 前端编辑器（ModelPicker / SlotFields / AllowedModelsEditor / AppEditorPage） | ✅ 组件级，未挂载 | `src/components/gateway/`，22 个前端测试 |
 | Codex 模型目录发布引用（`model_catalog_json` 的 slug） | ✅ | `codex_direct::reference_catalog`；测试断言目录含 `B/gpt-b`。真实 Codex 验证已做：CLI 0.166.0，`CODEX_HOME=<临时目录> codex debug models`，config 里 `model = "B/gpt-b"`、目录里 slug `B/gpt-b`（含 `/`）→ 正常渲染，无报错|
-| 「接管 / 释放」命令替代 `enter` / `exit` 对外语义 | ❌ | 见 §4 第 2 步 |
-| 删模式 UI 与状态机 | ❌ | 见 §2 |
+| 「接管 / 释放」命令替代 `enter` / `exit` 对外语义 | 🟡 后端 + 前端 API 已加（`adopt_app_to_gateway` / `release_app_from_gateway`、`gatewayApi.adopt/release`）；调用方仍是旧的 `set_proxy_takeover_for_app`，等 UI 切换 | 见 §4 第 2 步 |
+| 删模式 UI 与状态机 | ❌ | 见 §2；六个组件全部经 `SwitchModePanel` 使用，删之前必须先替换应用页主体（需要确认布局）|
