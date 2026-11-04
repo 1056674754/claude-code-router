@@ -148,6 +148,21 @@ P2 把它推广成「每个入口一个 token → app/profile」，其余 app �
 | pi | `settings.json` 的 `defaultProvider` / `defaultModel`（CCS 不写，见 §3 第 9 行） |
 | mcode / dsh / omp / kimi | 未核实，写 P1 前补齐 |
 
+### 3.5 已有「项目（Profile）」机制——P1 不要再造一个
+
+CCS 已经有一个跨 app 的配置档案实体，UI 顶栏的「不使用项目」就是它：
+
+- 表：`profiles(id, name, payload, sort_order, ...)`（`database/schema.rs:641-648`）
+- 载荷：`ProfilePayload { providers: PerApp<Option<String>>, mcp, skills, prompts }`
+  （`services/profile.rs:131-140`）——**每个 app 一个当前供应商 id**，加上启用的 MCP/Skills/Prompt
+- 当前指针：`settings` 表 `current_profile_id_<scope>`（`database/dao/profiles.rs:12`），按分组独立
+- 切换：`ProfileService::apply` 先自动保存旧项目（仅当前分组），再按载荷写各 app 的选择
+  （`services/profile.rs:343-367`）
+
+**含义**：CCR 的 profile 是「单个 agent 的模型配置」；CCS 的项目是「跨 app 的一份选择快照」。
+两者不是同一层，但可以合并——把模型配置加进 `ProfilePayload` 的 per-app 槽位，
+而不是新造一张表。P1 的这个选择必须由用户拍板（见 §7）。
+
 ## 4. 现状 D：不可路由与不可达的例外
 
 | 例外 | 证据 | 处置建议 |
@@ -198,6 +213,9 @@ P2 把它推广成「每个入口一个 token → app/profile」，其余 app �
 2. 14 app × 4 协议面里，`omp` / `dsh` 的 `api` 枚举已确认（§3），但它们**是否真的按条目返回对应协议**要真机抓一次请求
 3. `proxy_config` 由 4 值 CHECK 改成全局配置的迁移方案（v27）：新表 or 放宽 CHECK，二选一
 4. Kimi OAuth 经网关转发时的锁复用点，与 `kimi_oauth::lock` 的具体调用位置
+5. **P1 存储决策**：模型配置（默认 + 槽位 + 允许列表 + 路由）扩展进 `ProfilePayload`（复用「项目」），
+   还是新造 `gateway_app_profiles` 表。前者复用现有 UI/切换/自动保存，但会让「项目」语义变宽；
+   后者语义干净，但要再造一套 current 指针与切换流程
 
 > 已核实并在正文落地的：hermes/pi/omp/agy 的累加语义（§3、§3.4）、
 > Kimi 刷新协调（§6）、`proxy_config` 的 CHECK 约束（§1.4）。
