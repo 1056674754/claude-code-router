@@ -120,7 +120,7 @@ test("gateway pipeline closes the client response when the upstream resets mid-s
     getBrowserWebSearchMcpIntegration: () => undefined,
     getConfig: () => config,
     getCoreAuthToken: () => "test-core-token",
-    getPlugin: () => ({}),
+    getPlugin: () => ({ routeRequest: async (input) => ({ body: input.body, decision: { diagnostics: [], reason: "passthrough", rewrites: [], source: "default" } }) }),
     getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
   });
   const originalFetch = globalThis.fetch;
@@ -179,7 +179,7 @@ test("a disturbed upstream error body still yields a fallback error response", a
     getBrowserWebSearchMcpIntegration: () => undefined,
     getConfig: () => config,
     getCoreAuthToken: () => "test-core-token",
-    getPlugin: () => ({}),
+    getPlugin: () => ({ routeRequest: async (input) => ({ body: input.body, decision: { diagnostics: [], reason: "passthrough", rewrites: [], source: "default" } }) }),
     getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
   });
   const originalFetch = globalThis.fetch;
@@ -196,12 +196,93 @@ test("a disturbed upstream error body still yields a fallback error response", a
       });
       response.writeHead = () => response;
       await pipeline.proxyRequest(request, response, "/v1/messages/resp-disturbed");
+      console.error("DBG chunks:", JSON.stringify(chunks));
       const payload = chunks.join("");
-      assert.ok(payload.includes("error body could not be relayed"), `unexpected payload: ${payload.slice(0, 160)}`);
-      assert.ok(payload.includes("upstream rejected the request") === false || payload.includes("relay"), "fallback payload expected");
+      // A body disturbed by another consumer is unrecoverable; the executor
+      // rebuilds a diagnostic envelope so the client still sees a real 400
+      // error message instead of an empty body or a reset socket.
+      assert.ok(payload.includes("could not be relayed"), `unexpected payload: ${payload.slice(0, 160)}`);
+      assert.ok(payload.includes("Upstream returned 400"), "envelope must carry the upstream status");
       assert.equal(response.writableEnded, true);
       assert.equal(response.destroyed, false);
     }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// Reproduces the 2026-11-04 Codex ChatGPT failure shape: anthropic /v1/messages,
+// openai_responses provider, non-stream upstream 400 with a JSON error body —
+// something consumed that body before the buffered aggregate branch, so the
+// client got the fallback envelope instead of the real upstream error.
+test("openai_responses provider 400 bodies relay without a double read", async () => {
+  const config = createDefaultAppConfig();
+  config.observability.requestLogs = false;
+  config.contextArchive.enabled = false;
+  config.Providers = [{
+    api_base_url: "https://chatgpt.backend.test/backend-api/codex",
+    id: "codex-chatgpt",
+    models: ["gpt-6.1-terra"],
+    name: "Codex ChatGPT",
+    type: "openai_responses"
+  }];
+  config.profile = {
+    profiles: [{
+      agent: "claude-code",
+      enabled: true,
+      scope: "global",
+      id: "claude-code-global",
+      model: "Codex ChatGPT/gpt-6.1-terra",
+      name: "Claude Code",
+      sonnetModel: "Codex ChatGPT/gpt-6.1-terra"
+    }]
+  };
+  const pipeline = new GatewayRequestPipeline({
+    getBrowserWebSearchMcpIntegration: () => undefined,
+    getConfig: () => config,
+    getCoreAuthToken: () => "test-core-token",
+    getPlugin: () => ({ routeRequest: async (input) => ({ body: input.body, decision: { diagnostics: [], reason: "passthrough", rewrites: [], source: "default" } }) }),
+    getStatus: () => ({ coreEndpoint: "http://127.0.0.1:3457", endpoint: "http://127.0.0.1:3456" })
+  });
+  const originalFetch = globalThis.fetch;
+  const readers = [];
+  try {
+    const realBody = JSON.stringify({ error: { message: "real upstream rejection: bad thinking effort" } });
+    globalThis.fetch = async () => {
+      const response = new Response(realBody, {
+        headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(realBody)) },
+        status: 400
+      });
+      // Probe every consumption path with a stack capture.
+      const originalText = response.text.bind(response);
+      response.text = async () => {
+        readers.push(new Error("text() stack").stack?.split("\n").slice(1, 4).join(" | "));
+        return originalText();
+      };
+      const originalJson = response.json.bind(response);
+      response.json = async () => {
+        readers.push(new Error("json() stack").stack?.split("\n").slice(1, 4).join(" | "));
+        return originalJson();
+      };
+      return response;
+    };
+    const request = Readable.from([Buffer.from(JSON.stringify({
+      max_tokens: 64,
+      messages: [{ role: "user", content: "hi" }],
+      model: "claude-sonnet-5"
+    }))]);
+    request.method = "POST";
+    request.url = "/v1/messages";
+    request.headers = { "content-type": "application/json" };
+    const chunks = [];
+    let status;
+    const response = new Writable({ write(chunk, _encoding, done) { chunks.push(String(chunk)); done(); } });
+    response.writeHead = (value) => { status = value; return response; };
+    await pipeline.proxyRequest(request, response, "/v1/messages");
+    const payload = chunks.join("");
+    console.error("DBG status:", status, "readers:", JSON.stringify(readers, null, 1), "payload:", payload.slice(0, 200));
+    assert.ok(payload.includes("real upstream rejection"), "the real upstream error body must reach the client");
+    assert.equal(status, 400);
   } finally {
     globalThis.fetch = originalFetch;
   }

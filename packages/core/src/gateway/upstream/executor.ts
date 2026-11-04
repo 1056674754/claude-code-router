@@ -495,7 +495,7 @@ export async function fetchUpstreamWithFallback(input: {
     releaseJsonObject(input.body);
 
     try {
-      const response = await fetchWithSystemProxy(attemptUrl, {
+      let response = await fetchWithSystemProxy(attemptUrl, {
         body: shouldSendBody(input.method) ? attempt.body?.toString("utf8") : undefined,
         headers: upstreamHeaders,
         method: input.method,
@@ -666,6 +666,36 @@ export async function fetchUpstreamWithFallback(input: {
 
       if (response.ok) {
         recordCircuitSuccess(attemptProvider);
+      } else if (response.body && !(response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+        // Single-owner error body: consume the failed response's JSON body
+        // once HERE and rebuild a fresh Response from the buffered text. Some
+        // provider paths (Codex OAuth middleware) race a second consumer that
+        // disturbs the body before the pipeline's aggregate-error buffer runs,
+        // which turned relayed 4xx errors into "Body has already been read".
+        // Bounded like the pipeline's aggregate buffer; SSE errors stream.
+        let relayText = "";
+        let relayError = "";
+        try {
+          const text = await response.text();
+          relayText = text.length > 262_144 ? text.slice(0, 262_144) : text;
+        } catch (error) {
+          relayError = formatError(error);
+        }
+        const relayHeaders = new Headers(response.headers);
+        if (!relayText) {
+          relayText = JSON.stringify({
+            error: {
+              message: `Upstream returned ${response.status} but its error body could not be relayed (${relayError || "upstream error body was consumed elsewhere"}). Retry the request; see the CCR request log for the upstream payload.`
+            }
+          });
+          relayHeaders.delete("content-length");
+        }
+        relayHeaders.set("content-length", String(Buffer.byteLength(relayText)));
+        response = new Response(relayText, {
+          headers: relayHeaders,
+          status: response.status,
+          statusText: response.statusText
+        });
       }
       return {
         attempt,
