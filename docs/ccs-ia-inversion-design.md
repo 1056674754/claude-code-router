@@ -734,3 +734,63 @@ CCS_VERIFY_DB=/path/to/copy.db cargo test --lib manual_create_against_real_db_co
 在 Tauri 的 WKWebView 上不可靠：焦点跳转和点击落点都抓不准，
 填到第二格就开始串行。所以"点创建 → 看到 toast"这一段没有真机证据，
 只有 jsdom 用例。等有更靠谱的 GUI 自动化手段再补。
+
+## 20. 上游协议 vs 下游协议（这一轮最重要的修正）
+
+### 20.1 两段协议
+
+一条请求穿过代理时有两段协议，之前被我混成了一回事：
+
+```
+Claude Code ──下游: Anthropic Messages──▶ CCS 代理 :15721 ──上游: OpenAI Chat──▶ /v1/chat/completions
+Codex       ──下游: OpenAI Responses  ──▶ CCS 代理 :15721 ──上游: OpenAI Chat──▶ /v1/chat/completions
+opencode    ──下游: 自己配的          ──▶ 直连或代理         ──上游: OpenAI Chat──▶ /v1
+```
+
+- **下游协议**由客户端决定，是 app 的固有属性（claude→Anthropic Messages，codex→Responses）。
+- **上游协议**由 `provider.meta.apiFormat` 决定，是供应商的属性。
+- 代理就是两段之间的转换器；两者不同正是路由模式存在的理由。
+- **直连模式下没有代理**，下游必须等于上游，否则跑不通。
+
+### 20.2 派生错在哪
+
+`p1_protocol_for(app_type, config)` 是**按 app 类型**推协议的——那是**下游**协议，却被写进了
+`upstream_endpoints.protocol`（上游协议的位置）。后果：
+
+- CTYun：claude/claude-desktop 的 provider 其实 `apiFormat = openai_chat`，被标成 `anthropic`
+- codex 那条 `apiFormat = openai_responses` 但 CTYun 只有 `/v1/chat/completions`（已修成 `openai_chat`）
+- 同一个上游 API，因为使用者不同，被拆成"三个端点"
+
+### 20.3 新规则
+
+**供应商身份 = 规范化服务根 + 上游协议。**
+
+- 服务根 = 去掉 `/chat/completions` `/responses` `/messages` 这类完整接口后缀，
+  于是 `.../v1` 与 `.../v1/chat/completions` 归到同一家
+- 上游协议：`meta.apiFormat` → `settings_config.api_format/apiFormat` → codex TOML 的
+  `wire_api` → 回落到端点自己的协议列
+- 界面上一家供应商只有**一个地址**；"这个地址被谁用"放在接入列表里
+- 同地址不同上游协议 = 两个 API 面，算两家（例如 Kimi 的 `kimi_managed` 与 `openai_chat`）
+
+真实库副本跑出来的效果（26 家，CTYun 从 3 行并成 1 行挂 7 个 app）见 §19.4 的工具：
+
+```
+CTYun   openai_chat  https://ai.ctaigw.cn/v1  apps=[dsh,hermes,omp,opencode,claude,claude-desktop,codex] creds=7
+```
+
+### 20.4 数据修正记录
+
+`~/.cc-switch/cc-switch.db`（备份 `cc-switch.db.pre-apiformat.bak`）：
+
+```
+codex / universal-codex-2634078d… : meta.apiFormat openai_responses → openai_chat
+```
+
+理由：CTYun 只提供 `/v1/chat/completions`，没有 Responses 端点。改后 codex 的
+Responses 请求会被转成 chat completions 再发出去。
+
+### 20.5 还没有做的
+
+`p1_protocol_for` 本身仍是"下游协议推导"，`upstream_endpoints.protocol` 里存的历史值
+也还是旧语义。供应商总览已经绕过它（优先读 `meta.apiFormat`），但这一列的语义统一
+要单独一轮做迁移 + 回滚，不和纳管混在一起。
