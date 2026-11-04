@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { applyMetaTokenFloor } from "@ccr/core/gateway/core-runtime/meta-token-floor";
-import { applyResponsesSessionAffinity, inboundMetadataUserId, resolveResponsesSessionKey } from "@ccr/core/gateway/core-runtime/responses-session-affinity";
+import { applyResponsesSessionAffinity, inboundMetadataUserId, isCodexResponsesUpstream, resolveResponsesSessionKey } from "@ccr/core/gateway/core-runtime/responses-session-affinity";
 import type { ResponsesSessionAffinityInput } from "@ccr/core/gateway/core-runtime/responses-session-affinity";
 import { applyResponsesToolStrictness } from "@ccr/core/gateway/core-runtime/responses-tool-strictness";
 import type { ResponsesToolStrictnessInput } from "@ccr/core/gateway/core-runtime/responses-tool-strictness";
@@ -441,6 +441,36 @@ export function createGatewayPlugin() {
         return {
           ok: true as const,
           value: applyResponsesToolStrictness(input)
+        };
+      }
+    }, {
+      // The ChatGPT Codex backend rejects /responses calls with stream !==
+      // true ("Stream must be set to true") — always stream upstream, even
+      // for non-stream clients.
+      key: "ccr-codex-responses-stream-required",
+      transformRequest(input: ResponsesSessionAffinityInput) {
+        const upstreamRequest = input.upstreamRequest;
+        const providerType = input.targetProviderConfig?.type?.trim().toLowerCase();
+        if (providerType !== "openai_responses") {
+          return { ok: true as const, value: upstreamRequest };
+        }
+        if (!isCodexResponsesUpstream(upstreamRequest.url, input.targetProviderConfig)) {
+          return { ok: true as const, value: upstreamRequest };
+        }
+        const body = upstreamRequest.body as Record<string, unknown> | undefined;
+        if ((upstreamRequest.bodyEncoding ?? "json") !== "json" || !body) {
+          return { ok: true as const, value: upstreamRequest };
+        }
+        if (body.stream === true) {
+          return { ok: true as const, value: upstreamRequest };
+        }
+        return {
+          ok: true as const,
+          value: {
+            ...upstreamRequest,
+            body: { ...body, stream: true },
+            headers: { ...upstreamRequest.headers, accept: "text/event-stream" }
+          }
         };
       }
     }],
