@@ -79,28 +79,35 @@ CREATE TABLE gateway_app_profiles (
 
 ---
 
-## 4. 迁移（P1 的唯一一次写操作）
+## 4. 迁移（P1 的唯一一次写操作）——已实现 `services/gateway_migration.rs`
 
-输入：`live-state.json` 的每 app `stack{members, keys}` + 各 app 现有 provider 行。
-输出：`upstream_models` 行 + `gateway_app_profiles` 行。
+输入：`live-state.json` 的每 app `stack{enabled, members, keys}` + `proxy_route` + 各 app 的 provider 行。
+输出：`gateway_app_profiles` 行（目录不落库，见 §2 决策 1 改判）。
 
-1. 对每个 app 的每个 provider 行取模型清单：
-   - claude / claude-desktop / codex：调用 P0 §2 那三个已有推导函数
-     （`mode::stack::claude_models` / `desktop_models` / `codex_model_ids` → `codex_published_models`）
-   - 其余 app：读各自配置里的 `models` 容器（对象 / 带 `id` 的数组 / 单键对象 / 字符串数组），
-     kimi 取内层 `model`（键是 `<provider>/<model>`），opencode 先按读取路径抽 fragment：
-   - 不要重写推导：`[1M]` 剥标记、显示名、窗口这些规则都在函数里
-   - 目录范围是**所有 provider 行**（不只 stack 成员），这样用户能自由挑模型
-2. 按 (endpoint, model_id) 去重写入 `upstream_models`，`source` 记来源
-3. `keys` 登记簿原样保留（id 永久归属不能丢）：迁移成 `upstream_models.id` 的稳定分配
-4. `gateway_app_profiles`：
-   - `default` = 现有「当前供应商」+ 该供应商第一个模型（claude 取 `ANTHROPIC_MODEL`；codex 取 `model`；…）
-   - `slots` = 现有四档 env 反解（P0 §3.4 表）
-   - `allowed` = 当前 stack 发布清单（同一批模型，只是改成目录引用）
-5. 写迁移标记（`settings` 表 `gateway_catalog_migrated_v1=1`），二次启动不重跑
+翻译规则（纯函数 `build_app_config`，测试直接喂 `Member`）：
 
-**回滚**：迁移只新增行、不改客户端文件；回滚 = 删除两张新表 + 标记，旧 `stack` 数据仍在
+1. 默认 = **路由那家**（`mode.proxy_route`，Stack 里占默认的成员）的第一个模型，
+   按目录引用写。路由那家不在名单里时退回名单第一家。
+2. 槽位 = 路由那家的 `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`（只有 claude 有槽位），
+   值先剥 `[1M]` 再查目录引用。
+3. 允许列表 = Stack 名单里**所有成员**发布的模型（去重）——就是聚合时能选的那批。
+4. 目录里查不到的模型直接丢弃，不编造；成员全查不到 → `NothingToMigrate`，不写。
+5. `keys` 登记簿不动：它只存在于 `live-state.json`，新设计不再需要，但也不删（回滚要用）。
+
+幂等：已配过该 app 的不覆盖（`AlreadyConfigured`），重跑安全。**不写** `settings` 标记：
+「已配置」本身就是标记，少一处状态。
+
+**回滚**：只新增 `gateway_app_profiles` 行、不改客户端文件；回滚 = 删行，旧 `stack` 数据仍在
 `live-state.json`，不丢。
+
+**真实库副本 + 本机 live-state 实测**（`manual_migrate_against_real_db_copy`）：
+
+| app | 结果 | 说明 |
+| --- | --- | --- |
+| claude-desktop | `Migrated` | 默认 `Codex/gpt-6.1-terra`，允许列表 9 条（Codex 4 + kpzhu 4 + CTYun 1） |
+| claude | `NoStack` | 没有 Stack |
+| codex | `NoStack` | Stack 开着但模式是直连（Stack 未生效） |
+| 第二次运行 | 全部 `AlreadyConfigured` / `NoStack` | 幂等验证 |
 
 ---
 
