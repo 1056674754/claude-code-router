@@ -98,6 +98,6 @@ Codex 的模型目录条目带**每条模型自己的工具 profile 与协议**�
 | Claude Desktop profile 发布模型引用 | ✅ | `desktop_model_config_publications`；测试 `claude_desktop_publishes_model_references_from_app_model_config` |
 | Codex `config.toml` 的 `model` 写引用 | ✅ | `Target::Proxy.model`；测试 `codex_enter_writes_the_model_reference_from_app_model_config` |
 | 前端编辑器（ModelPicker / SlotFields / AllowedModelsEditor / AppEditorPage） | ✅ 组件级，未挂载 | `src/components/gateway/`，22 个前端测试 |
-| Codex 模型目录发布引用（`model_catalog_json` 的 slug） | ❌ | 需逐条模型带工具 profile，且要真实 Codex 验证含 `/` 的 slug |
+| Codex 模型目录发布引用（`model_catalog_json` 的 slug） | ✅ | `codex_direct::reference_catalog`；测试断言目录含 `B/gpt-b`。**未做真实 Codex 验证**（含 `/` 的 slug 是否被接受）|
 | 「接管 / 释放」命令替代 `enter` / `exit` 对外语义 | ❌ | 见 §4 第 2 步 |
 | 删模式 UI 与状态机 | ❌ | 见 §2 |
