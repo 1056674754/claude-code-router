@@ -146,7 +146,10 @@ P2 把它推广成「每个入口一个 token → app/profile」，其余 app �
 | openclaw | `agents.defaults.model`（`commands/openclaw.rs:50-57` 已有读写命令） |
 | hermes | `model.default` + `model.provider`（`hermes_config.rs:124-133`） |
 | pi | `settings.json` 的 `defaultProvider` / `defaultModel`（CCS 不写，见 §3 第 9 行） |
-| mcode / dsh / omp / kimi | 未核实，写 P1 前补齐 |
+| mcode | `defaultModel` / `defaultLightModel`（`config.yaml`，`<provider>/<model>`，`mcode_config.rs:212`） |
+| kimi | 顶层 `default_model`（`kimi_config.rs:292-439`） |
+| omp | `config.yml` 的 `modelRoles.default`（`<provider>/<model>`，**CCS 从不写**，`omp_config.rs:946`） |
+| dsh | 无默认模型字段：模型由 profile patch 里的 providers 列表 + 客户端自己选 |
 
 ### 3.5 已有「项目（Profile）」机制——P1 不要再造一个
 
@@ -209,13 +212,26 @@ CCS 已经有一个跨 app 的配置档案实体，UI 顶栏的「不使用项�
 
 ## 7. 未核实项（写代码前必须补）
 
-1. `mcode` / `dsh` / `omp` / `kimi` 的**默认模型字段**（§3.4 最后一行）
-2. 14 app × 4 协议面里，`omp` / `dsh` 的 `api` 枚举已确认（§3），但它们**是否真的按条目返回对应协议**要真机抓一次请求
-3. `proxy_config` 由 4 值 CHECK 改成全局配置的迁移方案（v27）：新表 or 放宽 CHECK，二选一
-4. Kimi OAuth 经网关转发时的锁复用点，与 `kimi_oauth::lock` 的具体调用位置
-5. **P1 存储决策**：模型配置（默认 + 槽位 + 允许列表 + 路由）扩展进 `ProfilePayload`（复用「项目」），
+1. 14 app × 4 协议面里，`omp` / `dsh` 的 `api` 枚举已确认（§3），但它们**是否真的按条目返回对应协议**要真机抓一次请求
+2. `proxy_config` 由 4 值 CHECK 改成全局配置的迁移方案（v27）：新表 or 放宽 CHECK，二选一（建议见下）
+3. **P1 存储决策**：模型配置（默认 + 槽位 + 允许列表 + 路由）扩展进 `ProfilePayload`（复用「项目」），
    还是新造 `gateway_app_profiles` 表。前者复用现有 UI/切换/自动保存，但会让「项目」语义变宽；
    后者语义干净，但要再造一套 current 指针与切换流程
+
+### 7.1 已关闭的两项（本轮核实）
+
+- **默认模型字段**（原第 1 项）：已补进 §3.4，四个 app 全部落实；其中 dsh/omp 是「客户端自己选」，CCS 不写
+- **Kimi 锁复用点**（原第 4 项）：不要另写刷新逻辑。`services/kimi_oauth/account.rs:261-269` 已经在
+  `proper-lockfile` 同款锁下刷新（`lock::acquire`，5s 过期、1s 心跳），且 `refresh_supported()` 为假
+  （Windows 或 `KIMI_DISABLE_OAUTH_LOCK=1`）时**不得刷新**。网关侧只调用这条现成路径
+
+### 7.2 proxy_config 迁移选型（建议 B）
+
+- **A 放宽 CHECK**：SQLite 改不了 CHECK，必须整表重建（v13→v14 已有 `proxy_config_new` 先例，
+  `database/schema.rs:1282-1300`），且重建后仍是 per-app 语义，与「网关只有一份配置」矛盾
+- **B 新增单例表 `gateway_config`**（`id TEXT PRIMARY KEY DEFAULT 'gateway'`）：把监听地址/端口/超时/
+  熔断参数搬过去，`proxy_config` 原样保留（历史统计/兼容），不再作为开关来源
+- **建议 B**：不动 4 值 CHECK、无整表重建风险；迁移就是「读第一行 → 写单例 → 标记已迁移」
 
 > 已核实并在正文落地的：hermes/pi/omp/agy 的累加语义（§3、§3.4）、
 > Kimi 刷新协调（§6）、`proxy_config` 的 CHECK 约束（§1.4）。
