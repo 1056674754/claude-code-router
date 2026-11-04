@@ -105,7 +105,26 @@
    **模式清零后仍需要 app 归属**（同一个协议面被多个 app 使用），归属方式要从「handler 写死」
    改成「入口 token / 路径命名空间」，这是 P2 的核心改动。
 
-### 3.2 app 归属的现成先例
+### 3.2 今天 app 归属靠路径，不靠 token
+
+所有客户端写的是同一个字面量 `PROXY_MANAGED`（`proxy/forwarder.rs:48` `PROXY_AUTH_PLACEHOLDER`；
+`mode/controller.rs:3970` 写进 codex 的 `experimental_bearer_token`，`:3293` 写进 gemini 的
+`GEMINI_API_KEY`，claude 的 `ANTHROPIC_AUTH_TOKEN` 同值）。也就是说代理**不区分调用方**，
+app 归属完全由路径决定（`/claude-desktop/*`、`/codex/*`、`/grokbuild/*`、`/gemini/*`）。
+
+模式清零后路径会冲突：claude 和 desktop 都用 `/v1/messages`；codex 和 opencode 都想用
+`/v1/chat/completions`。三个候选：
+
+| 方案 | 依据 | 代价 |
+|---|---|---|
+| A. 每入口一个 token | Desktop 已有 `get_or_create_gateway_token` 先例（§3.2 原条目） | 要改 claude/gemini/codex 写的 token 值 |
+| B. 路径命名空间 | 现成的 `/claude-desktop`、`/codex`、`/grokbuild`、`/gemini` 前缀 | 各 app 的 base URL 必须带上前缀，得逐个验证客户端是否保留路径 |
+| C. 不做归属 | 模型 id 在网关全局唯一，路由只需要「模型 → 供应商」 | 失去 per-app 统计与 per-app 策略；协议转换只依赖下游协议面 |
+
+**倾向 C 起步、需要时再加 A**：路由正确性不需要 app 身份；但 CCS 现有 UI 的 per-app 统计
+依赖它，这条要在 P2 明确一次。
+
+### 3.2.1 app 归属的现成先例
 
 Desktop 已经用 token 做归属，不需要发明：`handlers.rs:472-501` 用
 `claude_desktop_config::get_or_create_gateway_token(db)` 校验 `Authorization`，
