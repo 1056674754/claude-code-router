@@ -46,7 +46,7 @@
 
 | 面 | 现在依赖模式 | 处置 |
 |---|---|---|
-| `proxy_config` 表（per app 的 `proxy_enabled` / `enabled` / 监听地址） | 代理模式的开关 | 保留，改成网关的全局开关 |
+| `proxy_config` 表（per app 的 `proxy_enabled` / `enabled` / 监听地址） | 代理模式的开关 | 保留，改成网关的全局开关；**表里有 `CHECK (app_type IN ('claude','codex','gemini','grokbuild'))`（`database/schema.rs:1283`），改成全局要一次 schema 迁移** |
 | `proxy_route`（`mode.proxy_route`）+ `mode::current::provider_in_use` | 路由到哪家 | 删除：路由改由模型决定 |
 | 故障转移 / 熔断器 / 使用统计 | 路由模式专属 | 保留为网关能力，作用对象从「当前上游」变成「解析出来的上游」 |
 | `Contract.exclusive` | 代理契约字段回收 | 保留（网关入口仍需要写入/回收） |
@@ -85,13 +85,13 @@
 | 5 | grokbuild | `~/.grok/config.toml` | 模型表 `base_url`（`grok_config.rs:16`） | 固定 OpenAI Responses | 切换 | ✅ `/grokbuild/v1` |
 | 6 | opencode | `~/.config/opencode/opencode.json(c)` | `options.baseURL` / `providers[].baseURL` | `npm`/`package`（V1/V2），带 `api` | 累加 | ❌ |
 | 7 | openclaw | `~/.openclaw/openclaw.json` | `baseUrl` | `api`：`anthropic-messages` / `openai-completions` | 累加 | ❌ |
-| 8 | hermes | `~/.hermes`（`hermes_config.rs:82`） | `base_url` | `api` | 累加 | ❌ |
-| 9 | pi | `<pi agent>/models.json` + `settings.json` | `providers[].baseUrl` | `api`：`openai-completions` / `anthropic-messages`（`pi.rs:594-600`） | 累加 | ❌ |
+| 8 | hermes | `~/.hermes`（`hermes_config.rs:82`） | `base_url` | `api` | 累加（`providers:` 只读，只写 `custom_providers:`，`hermes_config.rs:602-645`） | ❌ |
+| 9 | pi | `<pi agent>/models.json` + `settings.json` | `providers[].baseUrl` | `api`：`openai-completions` / `anthropic-messages`（`pi.rs:594-600`） | 累加；**`auth.json` 与 defaults 从不改**（`pi.rs:440` 测试名即约束） | ❌ |
 | 10 | kimi | `~/.kimi-code/config.toml` | `provider.base_url` | `type=kimi` + `protocol`（官方目录管理，`kimi_config.rs:705-740`） | 累加（特殊） | ❌ |
 | 11 | mcode | `~/.minimax/config.yaml` | `options.baseURL` | `api`：`anthropic-messages` / `openai-completions` / `openai-responses`（`mcode_config.rs:125-137`） | 累加 | ❌ |
 | 12 | dsh | `~/.dsh`（`cordis.patch.yml` / profiles） | `options.baseURL` | `api`：如 `openai-responses`（`dsh_config.rs:1563`） | 累加 | ❌ |
-| 13 | omp | omp agent 目录 `models.yml` | `baseUrl` | `api`（枚举校验，`omp_config.rs:346-357`） | 累加 | ❌ |
-| 14 | agy | `~/.gemini/antigravity-cli/settings.json` | `env.GOOGLE_GEMINI_BASE_URL`（`agy_config.rs:113`） | 固定 Gemini | 累加? | ❌ |
+| 13 | omp | omp agent 目录 `models.yml` | `baseUrl` | `api`：`openai-completions` / `openai-responses` / `anthropic-messages`（`omp_config.rs:301-305`） | 累加 | ❌ |
+| 14 | agy | `~/.gemini/antigravity-cli/settings.json` | `env.GOOGLE_GEMINI_BASE_URL`（`agy_config.rs:113`） | 固定 Gemini | **切换**（单投影 `api_key`/`base_url`/`model`，`agy_config.rs:105-130`） | ❌ |
 
 ### 3.1 这张表的三个结论
 
@@ -133,6 +133,21 @@ P2 把它推广成「每个入口一个 token → app/profile」，其余 app �
 
 ---
 
+### 3.4 「默认模型」在每个 app 落在哪（P2 的 profile 字段映射）
+
+| app | 默认模型字段 |
+|---|---|
+| claude | `env.ANTHROPIC_MODEL` |
+| codex | `config.toml` 的 `model` |
+| gemini | `GEMINI_MODEL`（`.env`） |
+| grok | `models.default`（表名） |
+| desktop | 无单一默认：`inferenceModels[]` + 客户端选择 |
+| opencode | 顶层 `model` = `<provider>/<model>` |
+| openclaw | `agents.defaults.model`（`commands/openclaw.rs:50-57` 已有读写命令） |
+| hermes | `model.default` + `model.provider`（`hermes_config.rs:124-133`） |
+| pi | `settings.json` 的 `defaultProvider` / `defaultModel`（CCS 不写，见 §3 第 9 行） |
+| mcode / dsh / omp / kimi | 未核实，写 P1 前补齐 |
+
 ## 4. 现状 D：不可路由与不可达的例外
 
 | 例外 | 证据 | 处置建议 |
@@ -172,17 +187,20 @@ P2 把它推广成「每个入口一个 token → app/profile」，其余 app �
 | Desktop 选择器 id 黑名单 | 沿用 `claude-fable-ccs-<6 位>` 规则，不改生成器 |
 | 代理侧 app 归属丢失 | P2 引入入口命名空间（路径前缀或 token），对 14 app × 4 协议面出矩阵测试 |
 | 一次性删模式导致不可回滚 | 每阶段独立提交；P1 迁移脚本带 `--rollback`，真实库副本验证 |
+| Kimi OAuth 令牌轮换与 CLI 抢刷新 | `services/kimi_oauth/mod.rs:2-3` 明写「Kimi 在模型请求里轮换 refresh token，CC Switch 只在跨进程锁下为配额刷新」。网关转发 Kimi OAuth 请求必须复用同一把锁（`kimi_oauth::lock`），否则会把用户的登录刷坏 |
+| `has_route_mode` 面很小，但 `proxy_config` 的 4 值 CHECK 是硬的 | `mode/current.rs:26,43`、`mode/controller.rs:670,710`、`commands/proxy.rs:25` 共 5 处引用；改全局配置须连带 v27 迁移 |
 
 ---
 
 ## 7. 未核实项（写代码前必须补）
 
-1. `hermes` / `pi` / `agy` / `omp` 的**累加语义细节**（谁写 `defaults`、谁写成员表）——只看了字段，没读全写入路径
-2. `kimi` 的 OAuth 托管字段在网关侧如何刷新（凭据层是否已覆盖 `type=kimi`）
-3. 14 app × 4 协议面的**真实客户端协议**（尤其 omp/dsh/agy 是否只支持单一协议）
-4. `proxy_config` 表与 `has_route_mode` 在「网关全局开关」下的最小改动面
+1. `mcode` / `dsh` / `omp` / `kimi` 的**默认模型字段**（§3.4 最后一行）
+2. 14 app × 4 协议面里，`omp` / `dsh` 的 `api` 枚举已确认（§3），但它们**是否真的按条目返回对应协议**要真机抓一次请求
+3. `proxy_config` 由 4 值 CHECK 改成全局配置的迁移方案（v27）：新表 or 放宽 CHECK，二选一
+4. Kimi OAuth 经网关转发时的锁复用点，与 `kimi_oauth::lock` 的具体调用位置
 
----
+> 已核实并在正文落地的：hermes/pi/omp/agy 的累加语义（§3、§3.4）、
+> Kimi 刷新协调（§6）、`proxy_config` 的 CHECK 约束（§1.4）。
 
 ## 8. 对 P1–P4 的输入
 
