@@ -32,7 +32,7 @@ P0 §1.4/§7 已核实，网关级上游四张表在 v24→v25 就建好了（`d
 CREATE TABLE upstream_models (
   id           TEXT PRIMARY KEY,          -- 稳定 id，不随模型名改
   endpoint_id  TEXT NOT NULL,
-  model_id     TEXT NOT NULL,             -- 规范模型名（已剥 [1M]，标记进 one_m 列）
+  model_id     TEXT NOT NULL,             -- 规范模型名（已剥 [1M]）
   display_name TEXT,                      -- 目录里显示的名字
   context_window INTEGER,
   capabilities TEXT,                      -- JSON：modalities / reasoning / tool_call
