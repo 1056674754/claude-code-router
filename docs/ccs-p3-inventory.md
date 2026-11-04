@@ -87,3 +87,17 @@ Codex 的模型目录条目带**每条模型自己的工具 profile 与协议**�
 3. 删 `StackState` 与 `mode/stack.rs` 的编码；Stack 迁移已在 P1 做过（`gateway_migration`）
 4. 删六个 UI 组件与 `useModeActions`
 5. 最后删 `ModeState.mode/attached/contract`，`live-state.json` 只留「接管记录」
+
+## 5. 进度（按轮更新）
+
+| 项 | 状态 | 证据 |
+| --- | --- | --- |
+| 模型引用 → Claude Code env（默认 + 四档 + 回落 + 1M 标记） | ✅ | `live/project/claude.rs` `ModelConfigSlots` / `proxy_projection_from_model_config`；3 个单测 |
+| 接进 `mode::controller` 的 Claude 分支（Stack 为空才用） | ✅ | `claude_contract(..., model_config)`；controller 测试 `claude_enters_with_model_references_from_app_model_config` |
+| 保存配置后立刻重写已接管的客户端 | ✅ | `set_app_model_config` → `resync_route`；测试 `resync_rewrites_the_client_when_the_model_config_changes` |
+| Claude Desktop profile 发布模型引用 | ✅ | `desktop_model_config_publications`；测试 `claude_desktop_publishes_model_references_from_app_model_config` |
+| Codex `config.toml` 的 `model` 写引用 | ✅ | `Target::Proxy.model`；测试 `codex_enter_writes_the_model_reference_from_app_model_config` |
+| 前端编辑器（ModelPicker / SlotFields / AllowedModelsEditor / AppEditorPage） | ✅ 组件级，未挂载 | `src/components/gateway/`，22 个前端测试 |
+| Codex 模型目录发布引用（`model_catalog_json` 的 slug） | ❌ | 需逐条模型带工具 profile，且要真实 Codex 验证含 `/` 的 slug |
+| 「接管 / 释放」命令替代 `enter` / `exit` 对外语义 | ❌ | 见 §4 第 2 步 |
+| 删模式 UI 与状态机 | ❌ | 见 §2 |
