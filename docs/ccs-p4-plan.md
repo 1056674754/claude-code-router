@@ -46,12 +46,15 @@ CCR 里累加式 app 只需要一个 provider（指向网关）+ 若干模型 id
 2. `gateway_config` 已经有 per-app `AppModelConfig`，累加式 app 也能存（只是还没人读）
 3. 前端 `AppEditorPage` 对任意 appType 都能渲染，只是槽位为空
 
-## 5. 需要你回答的一个问题
+## 5. 已决定：A（路径前缀）
 
-**累加式 app（opencode 等）接到网关，用哪种归属方式？**
+用户 2026-11-04 选定 **A：路径前缀归属**。落地方式：
 
-- A：路径前缀（`/opencode/v1/...`），推荐
-- B：每 app 一个端口
-- C：不管归属，只按模型路由（最快，但行为风险最高）
+1. 每个累加式 app 一个前缀：`/opencode/v1/*`、`/hermes/v1/*`、`/pi/v1/*`、`/omp/v1/*`、`/dsh/v1/*`、`/openclaw/v1/*`
+2. `proxy/server.rs` 加这些前缀路由，handler 里按前缀判定 `AppType`（和 `/grokbuild/v1/*`、`/claude-desktop/*` 同一套做法）
+3. 各 app 的配置文件里，base URL 写带前缀的地址（网关地址 + 前缀）
+4. 每个 app 真机验证（opencode 是 CLI，可直接跑）
 
-定了之后 P4 按 §3 逐个 app 写配置，每个 app 都要真机跑一次（opencode 是 CLI，能直接验证）。
+## 6. 待定：§3 的单供应商写法细节
+
+按 A 落地后，每个累加式 app 只需要一个 provider 指向网关 + 模型引用列表；配置文件格式逐个 app 核对（opencode 先做）。
