@@ -858,3 +858,29 @@ app 只剩下两个用途：**写哪个文件**（入口形状）和**显示/统
 
 「provider 只配一次」的前提是那个 app **有入口**。5 个 app 成立；其余 9 个要么各补一个
 写入器（每家一个文件格式 + 协议验证），要么明确标成「直连，不参与纳管」。
+
+### 21.7 Claude Desktop 的入口是可见的（设置 → Connection → Gateway）
+
+Desktop 的入口不是"藏在文件里"：它在 Claude Desktop 自己的设置面板里就是
+**Connection → Gateway**，用户能看见也能改。面板背后是
+`~/Library/Application Support/Claude-3p/configLibrary/00000000-0000-4000-8000-000000157210.json`。
+
+| 面板字段 | profile 字段 | 当前真实值 |
+|---|---|---|
+| Gateway base URL | `inferenceGatewayBaseUrl` | `http://127.0.0.1:15721/claude-desktop` |
+| Gateway API key | `inferenceGatewayApiKey` | `ccs-91f8…`（CCS 生成的 gateway token，不是 `PROXY_MANAGED`） |
+| Credential kind: Static API key | `inferenceProvider=gateway` + `inferenceGatewayAuthScheme=bearer` | — |
+| （模型下拉） | `inferenceModels` | 路由那家的模型，`claude-*` id + `labelOverride` |
+
+三点推论：
+
+1. **URL 里的 `/claude-desktop` 不是装饰**，它是入口契约的一部分：同一个端口上，Claude Code 写裸
+   origin（走 `/v1/messages`），Desktop 写带前缀的 origin（走 `/claude-desktop/v1/messages`）。
+   前缀就是网关用来区分"这段流量是谁"的东西。
+2. **Desktop 的"一条条目"其实是三件套**：URL + Key + 模型列表。模型列表 = 「模型映射」在
+   Desktop 里的可见形态。
+3. **用户会在面板里改它**，所以写入器不能盲写。CCS 已经在防这个：`ClaudeDesktopStatus` 里有
+   `expected_base_url` 和 `actual_base_url` 的漂移检测（`claude_desktop_config.rs:116`）。
+
+对纳管的影响：入口写入器必须是**读-改-写 + 漂移检测**，不能"我写我的"。Desktop 这套机制
+可以复制给其它 app。
