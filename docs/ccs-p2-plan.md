@@ -18,10 +18,15 @@
 - `proxy/handlers.rs::resolve_stack_target`：Stack 保留前缀解不出来时先尝试按引用解析
   （旧的 `ccs-*` id 仍走原路径，P3 再删）
 
-已知待办：
+已知待办（实测数据）：
 
-- 每次请求都派生目录（~50 行）——先量耗时，必要时按「provider 行版本号」加缓存
-- Desktop 的 `/v1/models` 目录还只发布 Stack 模型，要改成发布目录引用（`handlers.rs::handle_claude_desktop_models`）
+- **性能**：真实库副本上 `derive_entries` = 18.8ms、`catalog_view`（第二次）= 8.7ms。
+  Claude Code 每次请求的 model 就是引用形状，等于每个请求都付这个成本，**不能接受**。
+  缓存方案要按「provider / upstream / override 这三个写入点」显式失效，不能用
+  `db_write_epoch`（请求日志也在写库，会每秒失效）——下一轮做
+- Desktop 的 `/v1/models` 已改成同时发布目录引用（`<供应商名>/<模型 id>`，见
+  `handlers.rs::handle_claude_desktop_models`），旧 Stack id 仍保留；选择引用后由
+  `resolve_stack_target` 按引用路由
 
 ## 2. 前端：应用页换成 CCR 的编辑内容（不弹 modal）
 
