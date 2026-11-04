@@ -117,14 +117,14 @@ app 归属完全由路径决定（`/claude-desktop/*`、`/codex/*`、`/grokbuild
 
 | 方案 | 依据 | 代价 |
 |---|---|---|
-| A. 每入口一个 token | Desktop 已有 `get_or_create_gateway_token` 先例（§3.2 原条目） | 要改 claude/gemini/codex 写的 token 值 |
+| A. 每入口一个 token | Desktop 已有 `get_or_create_gateway_token` 先例（§3.3） | 要改 claude/gemini/codex 写的 token 值 |
 | B. 路径命名空间 | 现成的 `/claude-desktop`、`/codex`、`/grokbuild`、`/gemini` 前缀 | 各 app 的 base URL 必须带上前缀，得逐个验证客户端是否保留路径 |
 | C. 不做归属 | 模型 id 在网关全局唯一，路由只需要「模型 → 供应商」 | 失去 per-app 统计与 per-app 策略；协议转换只依赖下游协议面 |
 
 **倾向 C 起步、需要时再加 A**：路由正确性不需要 app 身份；但 CCS 现有 UI 的 per-app 统计
 依赖它，这条要在 P2 明确一次。
 
-### 3.2.1 app 归属的现成先例
+### 3.3 app 归属的现成先例
 
 Desktop 已经用 token 做归属，不需要发明：`handlers.rs:472-501` 用
 `claude_desktop_config::get_or_create_gateway_token(db)` 校验 `Authorization`，
