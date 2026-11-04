@@ -794,3 +794,67 @@ Responses 请求会被转成 chat completions 再发出去。
 `p1_protocol_for` 本身仍是"下游协议推导"，`upstream_endpoints.protocol` 里存的历史值
 也还是旧语义。供应商总览已经绕过它（优先读 `meta.apiFormat`），但这一列的语义统一
 要单独一轮做迁移 + 回滚，不和纳管混在一起。
+
+## 21. 网关入口到底是什么（读代码后的更正）
+
+### 21.1 入口 = 两侧之间的那张契约
+
+「入口」不是一个单侧概念，它是**客户端配置里指向代理的那一条**（app 侧写什么）
+加上**网关收到后把请求认成谁**（网关侧怎么选上游）。两侧缺一不可。
+
+### 21.2 今天五个 app 的入口，形状各不相同
+
+| app | 客户端配置里写什么 | 网关路径 | 代码 |
+|---|---|---|---|
+| Claude Code | `ANTHROPIC_BASE_URL=http://127.0.0.1:15721`（裸 origin，无路径）+ `PROXY_MANAGED` + 四档模型别名 | `/v1/messages` | `live/project/claude.rs:249` |
+| Claude Desktop | profile 里 `inferenceGatewayBaseUrl=http://127.0.0.1:15721/claude-desktop`、`inferenceGatewayApiKey=<token>`、`inferenceModels=[…]` | `/claude-desktop/v1/messages` | `claude_desktop_config.rs:1194/1212/1480` |
+| Codex | `[model_providers.cc-switch] base_url="http://127.0.0.1:15721/v1"`、`wire_api="responses"`、`experimental_bearer_token` | `/v1/responses`、`/v1/chat/completions` | `live/project/codex.rs:505`、`services/proxy.rs:271` |
+| Gemini | `.env` 里 `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:15721`、`GEMINI_API_KEY=PROXY_MANAGED` | `/v1beta/*` | `mode/controller.rs:3289` |
+| Grok Build | `base_url="http://127.0.0.1:15721/grokbuild/v1"` | `/grokbuild/v1/responses` | `mode/controller.rs:473` |
+
+所以「写进配置的就是一条 127.0.0.1:15721 的条目」只在 Claude Code 上成立。其余分别是
+带路径的 origin、TOML 里的一张 provider 表、环境变量、Desktop 的 profile 块（还带模型列表）。
+
+### 21.3 网关侧：入口和 app 被写死成一对一
+
+`proxy/handlers.rs` 的每个 handler 里硬编码 `AppType`（`/v1/messages`→Claude、
+`/claude-desktop/*`→ClaudeDesktop、`/v1/chat/completions` 与 `/v1/responses`→Codex、
+`/v1beta/*`→Gemini、`/grokbuild/*`→GrokBuild），然后
+`ProxyContext::new(app_type, …)` 走 `get_proxy_config_for_app(app)` +
+`mode::current::provider_in_use(db, app)` 取**该 app 的当前上游**（`proxy/handler_context.rs:96`）。
+
+结论：路径 → app → 该 app 的队列，这条链是写死的。所以不存在「任意 app 引用同一个网关」，
+今天只有这 5 个 app 有入口，另外 9 个（opencode/openclaw/hermes/kimi/pi/mcode/dsh/omp/agy）
+连入口写入器都没有，只能直连。
+
+### 21.4 真正的机会：路径本身已经编码了下游协议
+
+代理的路由表里协议面是**平的**，不依赖 app：
+
+- `/v1/messages` → Anthropic Messages
+- `/v1/chat/completions` → OpenAI Chat
+- `/v1/responses` → OpenAI Responses
+- `/v1beta/*` → Gemini native
+
+也就是说，任何会说这四种协议的客户端**今天就能连上**，唯一卡住的地方是 handler 把
+「这条请求用谁的队列」写死成了 app。纳管要拆的正是这一处：
+
+```
+路径 → 下游协议 → 网关上游            （纳管后）
+路径 → app      → 该 app 的当前上游    （现在）
+```
+
+app 只剩下两个用途：**写哪个文件**（入口形状）和**显示/统计**。选上游与它无关。
+
+### 21.5 纳管在代码里的最小改动面
+
+1. `gateway_target`：网关级的当前上游（先一张表：协议面 → 上游 id，之后加按模型规则）
+2. `handler_context`：取上游时先问网关，未配置时回落 app 队列（现有 5 个 app 行为不变）
+3. 入口写入器已有 5 个；其余 9 个 each 一个文件格式，按需补（opencode 优先）
+4. 纳管动作：备份 app 配置 → 写入口 → 该 app 的 provider 列表收成一条（网关）→ 上游挂网关
+5. 解除：还原备份（已确认）
+
+### 21.6 边界
+
+「provider 只配一次」的前提是那个 app **有入口**。5 个 app 成立；其余 9 个要么各补一个
+写入器（每家一个文件格式 + 协议验证），要么明确标成「直连，不参与纳管」。
