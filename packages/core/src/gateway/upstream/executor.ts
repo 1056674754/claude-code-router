@@ -443,6 +443,24 @@ export async function fetchUpstreamWithFallback(input: {
     }
     const hasNextAttempt = index < attempts.length - 1;
     const attemptUrl = rewriteRouteModelInUrl(input.upstreamUrl, attempt.model);
+    // The ChatGPT Codex backend rejects /responses calls with stream !== true
+    // ("Stream must be set to true"). Force upstream streaming for codex
+    // Responses targets even when the client asked for a single JSON body —
+    // the pipeline relays whatever the upstream returns.
+    if (
+      attempt.credentialProtocol === "openai_responses" &&
+      isCodexResponsesBackendUrl(attemptUrl) &&
+      attempt.body
+    ) {
+      const codexBody = parseJsonObjectSafe(attempt.body);
+      if (codexBody && codexBody.stream !== true) {
+        codexBody.stream = true;
+        attempt.body = serializeJsonBody(codexBody);
+      }
+      if (!attemptHeaders.accept || !String(attemptHeaders.accept).includes("text/event-stream")) {
+        attemptHeaders.accept = "text/event-stream";
+      }
+    }
     const upstreamHeaders = {
       ...withCoreGatewayAuthHeader(
         omitLocalObservabilityHeaders(attempt.headers ?? input.headers),
@@ -1508,6 +1526,11 @@ function isRouteTraceChange(value: RequestRouteTraceChange | undefined): value i
   return Boolean(value);
 }
 
+
+function isCodexResponsesBackendUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return lower.includes("backend-api/codex") || lower.includes("chatgpt.com");
+}
 
 async function drainResponseBody(response: Response): Promise<void> {
   try {
