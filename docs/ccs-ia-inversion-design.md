@@ -861,6 +861,13 @@ app 只剩下两个用途：**写哪个文件**（入口形状）和**显示/统
 
 ### 21.7 Claude Desktop 的入口是可见的（设置 → Connection → Gateway）
 
+> **这段是 CCS 已有功能，不是待建项。** 面板属于 Claude Desktop 自己的 Desktop 3P 部署设置页
+> （文案在 `Claude.app/Contents/Resources/ion-dist.asar` 里），面板上显示的值是 **CCS 写进
+> profile 的**：地址 = `proxy_origin + /claude-desktop`，key = `get_or_create_gateway_token()`
+> 生成的 `ccs-…`，模型列表 = 路由那家的 `inferenceModels`。漂移检测也已经在
+> `ClaudeDesktopStatus.expected_base_url / actual_base_url` 里。
+> 结论：**入口这一层不用再造**，纳管复用它。
+
 Desktop 的入口不是"藏在文件里"：它在 Claude Desktop 自己的设置面板里就是
 **Connection → Gateway**，用户能看见也能改。面板背后是
 `~/Library/Application Support/Claude-3p/configLibrary/00000000-0000-4000-8000-000000157210.json`。
