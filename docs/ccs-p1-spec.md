@@ -32,14 +32,17 @@ P0 §1.4/§7 已核实，网关级上游四张表在 v24→v25 就建好了（`d
 CREATE TABLE upstream_models (
   id           TEXT PRIMARY KEY,          -- 稳定 id，不随模型名改
   endpoint_id  TEXT NOT NULL,
-  model_id     TEXT NOT NULL,             -- 发往上游的模型名（原值，可能带 [1M]）
+  model_id     TEXT NOT NULL,             -- 规范模型名（已剥 [1M]，标记进 one_m 列）
   display_name TEXT,                      -- 目录里显示的名字
   context_window INTEGER,
   capabilities TEXT,                      -- JSON：modalities / reasoning / tool_call
   source       TEXT NOT NULL,             -- 'stack' | 'slot' | 'app-config' | 'manual' | 'fetched'
+  one_m        INTEGER NOT NULL DEFAULT 0, -- 是否 1M 窗口
   created_at   INTEGER NOT NULL,
   UNIQUE (endpoint_id, model_id)
 );
+-- 目录视图按上游合并：CTYun 有 anthropic / openai_responses 两条端点，
+-- 同一个模型不能因为写到哪条端点而出现两次。
 
 CREATE TABLE gateway_app_profiles (
   app_type TEXT PRIMARY KEY,
@@ -67,7 +70,9 @@ CREATE TABLE gateway_app_profiles (
 ## 3. 模型引用与解析
 
 - 格式：`<供应商名>/<模型 id>`，供应商名取 `upstreams.name`；重名时加后缀 `（2）`
-- 解析：`供应商名` → `upstreams` → 取该供应商在**当前 app 的绑定协议**的 endpoint
+- 目录的键是 **(上游, 规范模型名)**，不是 (端点, 模型)：真实库副本实测 CTYun 有两条端点
+  （`anthropic` 与 `openai_responses`），按端点去重会让 `deepseek-v4.1-flash-1017` 出现两次
+- 解析：`供应商名` → `upstreams` → 在它的端点里选**当前 app 绑定协议**的那条
   （`provider_bindings.endpoint_id`；没有绑定时按 `upstream_endpoints.protocol` 选）
 - 发往上游的模型名：`upstream_models.model_id` 原值（`[1M]` 标记照 P0 §2 的规则处理）
 - 解析失败**必须报错**，不回落（沿用 stack 的严格失败语义，`mode/stack.rs` 设计注释）
@@ -111,9 +116,13 @@ CREATE TABLE gateway_app_profiles (
 2. 幂等：连续跑两次 `refresh_gateway_catalog`，行数不变
 3. `default`/`slots` 反解与迁移前客户端文件一致（golden 对比）
 4. 非法引用（不存在的供应商 / 模型）解析报错，不静默
-5. 真实库预估（已用库副本算过）：claude 5 家 / desktop 6 家 / codex 2 家，
-   去 `[1M]` 后 **18 个不同模型名**；`kimi-k3` 在 Kimi 与 Kimi For Coding 两个供应商下各一行，
-   目录约 **20 行 / 7 个供应商**。超出或少于都要能解释
+5. 真实库实测（`services::gateway_catalog::manual_derive_against_real_db_copy`）：
+   **19 个模型 / 6 个上游 / 7 条端点**。与预估的差异都可解释：
+   - 预估 20 → 实测 19：按端点去重时 CTYun 的 `deepseek-v4.1-flash-1017` 出现两次，
+     改成按上游合并后只剩一条
+   - `kimi-k2.6` 与 `kimi-k3` 在 `api.kimi.com` 下各一条（Kimi 与 Kimi For Coding 同主机）
+   - `My Claude`（claude）与 `kpzhu`（desktop）合并到 `kpzhu.com`：同一家中转
+   - `通用网关/default` 是空地址的官方行，保留为一条
 
 ---
 
