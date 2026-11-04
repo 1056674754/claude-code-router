@@ -84,8 +84,11 @@ CREATE TABLE gateway_app_profiles (
 输入：`live-state.json` 的每 app `stack{members, keys}` + 各 app 现有 provider 行。
 输出：`upstream_models` 行 + `gateway_app_profiles` 行。
 
-1. 对每个 app 的每个 provider 行，**直接调用 P0 §2 那三个已有推导函数**得到模型清单
-   （`mode::stack::claude_models` / `desktop_models` / `codex_model_ids`）：
+1. 对每个 app 的每个 provider 行取模型清单：
+   - claude / claude-desktop / codex：调用 P0 §2 那三个已有推导函数
+     （`mode::stack::claude_models` / `desktop_models` / `codex_model_ids` → `codex_published_models`）
+   - 其余 app：读各自配置里的 `models` 容器（对象 / 带 `id` 的数组 / 单键对象 / 字符串数组），
+     kimi 取内层 `model`（键是 `<provider>/<model>`），opencode 先按读取路径抽 fragment：
    - 不要重写推导：`[1M]` 剥标记、显示名、窗口这些规则都在函数里
    - 目录范围是**所有 provider 行**（不只 stack 成员），这样用户能自由挑模型
 2. 按 (endpoint, model_id) 去重写入 `upstream_models`，`source` 记来源
@@ -117,7 +120,9 @@ CREATE TABLE gateway_app_profiles (
 3. `default`/`slots` 反解与迁移前客户端文件一致（golden 对比）
 4. 非法引用（不存在的供应商 / 模型）解析报错，不静默
 5. 真实库实测（`services::gateway_catalog::manual_derive_against_real_db_copy`）：
-   **19 个模型 / 6 个上游 / 7 条端点**。与预估的差异都可解释：
+   **50 个模型 / 16 个上游 / 23 条端点**。分 app 贡献（含重复来源）：
+   opencode 28、claude-desktop 14、claude 13、hermes 9、kimi 6、dsh 2、codex 2、omp 1。
+   早期只覆盖三个 app 时的 19 条差异（历史记录，保留说明）：
    - 预估 20 → 实测 19：按端点去重时 CTYun 的 `deepseek-v4.1-flash-1017` 出现两次，
      改成按上游合并后只剩一条
    - `kimi-k2.6` 与 `kimi-k3` 在 `api.kimi.com` 下各一条（Kimi 与 Kimi For Coding 同主机）
